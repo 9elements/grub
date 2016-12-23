@@ -645,6 +645,27 @@ module = {
 };
 
 module = {
+  name = xhci;
+  common = bus/usb/xhci/pci.c;
+  common = bus/usb/xhci/usb/generic_hub.c;
+  common = bus/usb/xhci/usb/quirks.c;
+  common = bus/usb/xhci/usb/usb.c;
+  common = bus/usb/xhci/usb/usb_dev.c;
+  common = bus/usb/xhci/usb/usbhub.c;
+  common = bus/usb/xhci/usb/xhci.c;
+  common = bus/usb/xhci/usb/xhci_commands.c;
+  common = bus/usb/xhci/usb/xhci_debug.c;
+  common = bus/usb/xhci/usb/xhci_devconf.c;
+  common = bus/usb/xhci/usb/xhci_events.c;
+  common = bus/usb/xhci/usb/xhci_rh.c;
+  common = bus/usb/xhci/coreboot_io.c;
+  common = bus/usb/xhci_driver.c;
+  enable = pci;
+  cflags = '-Wno-error=unused-parameter -Wno-error=sign-compare -Wno-error=pointer-arith -Wno-error=unused-function -Wno-error=empty-body -Wno-error=type-limits';
+  cppflags = '-I$(srcdir)/bus/usb/xhci -I$(srcdir)/lib/posix_wrap -I$(top_builddir)/include/grub/machine';
+};
+
+module = {
   name = pci;
   common = bus/pci.c;
   i386_ieee1275 = bus/i386/ieee1275/pci.c;

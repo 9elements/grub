@@ -29,8 +29,10 @@
 
 //#define USB_DEBUG
 
-#include <libpayload-config.h>
 #include <usb/usb.h>
+#include "coreboot_io.h"
+#include <stdlib.h>
+#include <string.h>
 
 #define DR_DESC gen_bmRequestType(device_to_host, standard_type, dev_recp)
 
@@ -70,7 +72,7 @@ detach_controller (hci_t *controller)
 /**
  * Shut down all controllers
  */
-int
+static int
 usb_exit (void)
 {
 	while (usb_hcs != NULL) {
@@ -664,8 +666,11 @@ usb_attach_device(hci_t *controller, int hubaddress, int port, usb_speed speed)
 static void
 usb_generic_destroy (usbdev_t *dev)
 {
+	/* cause build error in GRUB */
+	/*
 	if (usb_generic_remove)
 		usb_generic_remove(dev);
+	*/
 }
 
 void
@@ -674,13 +679,19 @@ usb_generic_init (usbdev_t *dev)
 	dev->data = NULL;
 	dev->destroy = usb_generic_destroy;
 
+	/* cause build error in GRUB */
+	/*
 	if (usb_generic_create)
 		usb_generic_create(dev);
+	*/
 
+	/* For GRUB: don't detach device */
+	/*
 	if (dev->data == NULL) {
 		usb_debug("Detaching device not used by payload\n");
 		usb_detach_device(dev->controller, dev->address);
 	}
+	*/
 }
 
 /*

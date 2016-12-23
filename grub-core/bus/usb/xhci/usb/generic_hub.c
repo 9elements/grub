@@ -31,6 +31,7 @@
 
 #include <stdlib.h>
 #include <usb/usb.h>
+#include "coreboot_io.h"
 #include "generic_hub.h"
 
 void

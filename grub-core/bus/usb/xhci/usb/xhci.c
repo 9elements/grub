@@ -31,6 +31,8 @@
 //#define XHCI_SPEW_DEBUG
 
 #include <inttypes.h>
+#include <stdlib.h>
+#include <string.h>
 #include <arch/virtual.h>
 #include "xhci_private.h"
 #include "xhci.h"

@@ -1,7 +1,7 @@
 /*
- * This file is part of the libpayload project.
+ * This file is part of the coreboot project.
  *
- * Copyright (C) 2008 coresystems GmbH
+ * Copyright 2014 Google Inc.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -25,32 +25,14 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
+ *
  */
 
-#include <usb/usb.h>
-#include <stdlib.h>
+#ifndef __ARCH_BARRIER_H_
+#define __ARCH_BARRIER_H__
 
-static void
-usb_nop_destroy (usbdev_t *dev)
-{
-	if (dev->descriptor != 0)
-		free (dev->descriptor);
-	usb_nop_init (dev);
-	dev->address = -1;
-	dev->hub = -1;
-	dev->port = -1;
-}
+#define mb()
+#define rmb()
+#define wmb()
 
-static void
-usb_nop_poll (usbdev_t *dev)
-{
-	return;
-}
-
-void
-usb_nop_init (usbdev_t *dev)
-{
-	dev->descriptor = 0;
-	dev->destroy = usb_nop_destroy;
-	dev->poll = usb_nop_poll;
-}
+#endif /* __ARCH_BARRIER_H__ */

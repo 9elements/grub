@@ -31,6 +31,8 @@
 
 #include <arch/virtual.h>
 #include <usb/usb.h>
+#include <stdlib.h>
+#include <string.h>
 #include "xhci_private.h"
 
 static u32

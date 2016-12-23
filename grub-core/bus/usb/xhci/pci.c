@@ -28,8 +28,15 @@
  * SUCH DAMAGE.
  */
 
-#include <libpayload.h>
 #include <pci.h>
+#include <grub/cpu/io.h>
+
+#define inb grub_inb
+#define inw grub_inw
+#define inl grub_inl
+#define outb grub_outb
+#define outw grub_outw
+#define outl grub_outl
 
 u8 pci_read_config8(pcidev_t device, u16 reg)
 {

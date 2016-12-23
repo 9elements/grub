@@ -34,7 +34,7 @@
 //#define USB_DEBUG
 #include <usb/usb.h>
 #include <arch/barrier.h>
-#include <kconfig.h>
+#include "coreboot_io.h"
 
 //#define XHCI_DUMPS
 #define xhci_debug(fmt, args...) usb_debug("%s: " fmt, __func__, ## args)

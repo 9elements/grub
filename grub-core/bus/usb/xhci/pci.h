@@ -31,7 +31,12 @@
 #ifndef _PCI_H
 #define _PCI_H
 
-#include <arch/types.h>
+#include <stdint.h>
+
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+
 typedef u32 pcidev_t;
 
 /* Device config space registers. */

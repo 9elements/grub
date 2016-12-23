@@ -29,9 +29,10 @@
 
 #ifndef __USB_H
 #define __USB_H
-#include <libpayload.h>
 #include <pci/pci.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdarg.h>
 
 typedef enum { host_to_device = 0, device_to_host = 1 } dev_req_dir;
 typedef enum { standard_type = 0, class_type = 1, vendor_type =

@@ -27,30 +27,16 @@
  * SUCH DAMAGE.
  */
 
-#include <usb/usb.h>
-#include <stdlib.h>
+#ifndef _ARCH_VIRTUAL_H
+#define _ARCH_VIRTUAL_H
 
-static void
-usb_nop_destroy (usbdev_t *dev)
-{
-	if (dev->descriptor != 0)
-		free (dev->descriptor);
-	usb_nop_init (dev);
-	dev->address = -1;
-	dev->hub = -1;
-	dev->port = -1;
-}
+/*extern unsigned long virtual_offset;*/
+#define virtual_offset 0
 
-static void
-usb_nop_poll (usbdev_t *dev)
-{
-	return;
-}
+#define virt_to_phys(virt) ((unsigned long) (virt) + virtual_offset)
+#define phys_to_virt(phys) ((void *) ((unsigned long) (phys) - virtual_offset))
 
-void
-usb_nop_init (usbdev_t *dev)
-{
-	dev->descriptor = 0;
-	dev->destroy = usb_nop_destroy;
-	dev->poll = usb_nop_poll;
-}
+#define virt_to_bus(addr) virt_to_phys(addr)
+#define bus_to_virt(addr) phys_to_virt(addr)
+
+#endif

@@ -21,6 +21,7 @@
 
 #include <grub/types.h>
 #include <grub/i386/io.h>
+#include <grub/pci.h>
 
 #define GRUB_MACHINE_PCI_IO_BASE          0
 #define GRUB_PCI_ADDR_REG	0xcf8

@@ -40,4 +40,10 @@ snprintf (char *str, grub_size_t n, const char *fmt, ...)
   return ret;
 }
 
+static inline int
+vprintf (const char *fmt, va_list ap)
+{
+  return grub_vprintf(fmt, ap);
+}
+
 #endif

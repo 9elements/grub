@@ -211,6 +211,9 @@ struct grub_usb_device
   /* Device address.  */
   int addr;
 
+  /* The port the device is attached to (per roothub)*/
+  int portno;
+
   /* Device speed.  */
   grub_usb_speed_t speed;
 

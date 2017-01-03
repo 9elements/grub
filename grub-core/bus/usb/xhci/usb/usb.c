@@ -175,10 +175,10 @@ get_descriptor(usbdev_t *dev, int rtype, int desc_type, int desc_idx,
 
 		ret = dev->controller->control(dev, IN,
 				sizeof(dr), &dr, len, data);
-		if (ret)
+		if (ret < 0)
 			udelay(10);
 		else
-			return 0;
+			return ret;
 	}
 	return ret;
 }

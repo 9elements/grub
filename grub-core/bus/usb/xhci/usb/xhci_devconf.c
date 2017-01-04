@@ -229,19 +229,18 @@ xhci_set_address (hci_t *controller, usb_speed speed, int hubport, int hubaddr)
 	}
 
 	dev->endpoints[0].maxpacketsize = usb_decode_mps0(speed, buf[7]);
-	if (dev->endpoints[0].maxpacketsize != 8) {
-		memset((void *)ic->dev.ep0, 0x00, ctxsize);
-		*ic->add = (1 << 1); /* EP0 Context */
-		EC_SET(MPS, ic->dev.ep0, dev->endpoints[0].maxpacketsize);
+	/* Store Max Packet Size in xHC */
+	memset((void *)ic->dev.ep0, 0x00, ctxsize);
+	*ic->add = (1 << 1); /* EP0 Context */
+	EC_SET(MPS, ic->dev.ep0, dev->endpoints[0].maxpacketsize);
+	cc = xhci_cmd_evaluate_context(xhci, slot_id, ic);
+	if (cc == CC_RESOURCE_ERROR) {
+		xhci_reap_slots(xhci, slot_id);
 		cc = xhci_cmd_evaluate_context(xhci, slot_id, ic);
-		if (cc == CC_RESOURCE_ERROR) {
-			xhci_reap_slots(xhci, slot_id);
-			cc = xhci_cmd_evaluate_context(xhci, slot_id, ic);
-		}
-		if (cc != CC_SUCCESS) {
-			xhci_debug("Context evaluation failed: %d\n", cc);
-			goto _disable_return;
-		}
+	}
+	if (cc != CC_SUCCESS) {
+		xhci_debug("Context evaluation failed: %d\n", cc);
+		goto _disable_return;
 	}
 
 	goto _free_ic_return;

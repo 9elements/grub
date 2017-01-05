@@ -60,7 +60,7 @@ generic_hub_destroy(usbdev_t *const dev)
 	free(hub);
 }
 
-static int
+int
 generic_hub_debounce(usbdev_t *const dev, const int port)
 {
 	generic_hub_t *const hub = GEN_HUB(dev);

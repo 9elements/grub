@@ -114,6 +114,14 @@ struct grub_usb_controller_dev
   grub_usb_err_t (*cancel_transfer) (grub_usb_controller_t dev,
 				     grub_usb_transfer_t transfer);
 
+  /* optional alternative to setup/check/cancel transfer */
+  grub_usb_err_t (*control_transfer) (grub_usb_device_t dev,
+		      grub_uint8_t reqtype,
+		      grub_uint8_t request,
+		      grub_uint16_t value,
+		      grub_uint16_t index,
+		      grub_size_t size0, char *data_in);
+
   int (*hubports) (grub_usb_controller_t dev);
 
   grub_usb_err_t (*portstatus) (grub_usb_controller_t dev, unsigned int port,

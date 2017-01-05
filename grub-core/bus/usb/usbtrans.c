@@ -94,6 +94,17 @@ grub_usb_control_msg (grub_usb_device_t dev,
   grub_size_t size = size0;
   grub_size_t actual;
 
+  grub_dprintf ("usb",
+		"control: reqtype=0x%02x req=0x%02x val=0x%02x idx=0x%02x size=%lu\n",
+		reqtype, request, value, index, (unsigned long)size);
+
+  /* optional short circuit */
+  if (dev->controller.dev->control_transfer)
+  {
+    return dev->controller.dev->control_transfer(dev, reqtype,
+        request, value, index, size0, data_in);
+  }
+
   /* FIXME: avoid allocation any kind of buffer in a first place.  */
   data_chunk = grub_memalign_dma32 (128, size ? : 16);
   if (!data_chunk)
@@ -103,10 +114,6 @@ grub_usb_control_msg (grub_usb_device_t dev,
   grub_memcpy ((char *) data, data_in, size);
 
   grub_arch_sync_dma_caches (data, size);
-
-  grub_dprintf ("usb",
-		"control: reqtype=0x%02x req=0x%02x val=0x%02x idx=0x%02x size=%lu\n",
-		reqtype, request,  value, index, (unsigned long)size);
 
   /* Create a transfer.  */
   transfer = grub_malloc (sizeof (*transfer));

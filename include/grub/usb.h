@@ -122,6 +122,13 @@ struct grub_usb_controller_dev
 		      grub_uint16_t index,
 		      grub_size_t size0, char *data_in);
 
+  /* optional alternative to setup/check/cancel transfer */
+  grub_usb_err_t (*bulk_transfer) (grub_usb_device_t dev,
+			 struct grub_usb_desc_endp *endpoint,
+			 grub_size_t size0, char *data_in,
+			 grub_transfer_type_t type, int timeout,
+			 grub_size_t *actual);
+
   int (*hubports) (grub_usb_controller_t dev);
 
   grub_usb_err_t (*portstatus) (grub_usb_controller_t dev, unsigned int port,

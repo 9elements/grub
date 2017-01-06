@@ -346,6 +346,13 @@ grub_usb_bulk_readwrite (grub_usb_device_t dev,
   grub_usb_err_t err;
   grub_usb_transfer_t transfer;
 
+  /* optional short circuit */
+  if (dev->controller.dev->bulk_transfer)
+  {
+    return dev->controller.dev->bulk_transfer(dev, endpoint,
+        size0, data_in, type, timeout, actual);
+  }
+
   transfer = grub_usb_bulk_setup_readwrite (dev, endpoint, size0,
 					    data_in, type);
   if (!transfer)

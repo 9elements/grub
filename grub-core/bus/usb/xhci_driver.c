@@ -1,5 +1,17 @@
 /* Glue code to connect xHCI driver to GRUB */
 
+/*
+ * Known issues:
+ *
+ * - It hangs on some controllers (Sunrise Point-LP xHCI USB controller
+ *   [8086:9d2f] on Intel NUC6i5SYH)
+ *
+ * - It doesn't support HUBs. GRUB USB stack uses the setup_transfer code path
+ *   when it encounters a HUB, even though we tried to bypass that by directly
+ *   implementing control_transfer and bulk_transfer hooks (aligns better with
+ *   Coreboot driver, upon which this code is based).
+ */
+
 #include <grub/types.h> /* grub_uint32_t */
 #include <grub/pci.h> /* grub_pci_device_t */
 #include <grub/usb.h> /* grub_usb_controller_dev */

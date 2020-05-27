@@ -47,7 +47,8 @@ typedef enum
     GRUB_USB_SPEED_NONE,
     GRUB_USB_SPEED_LOW,
     GRUB_USB_SPEED_FULL,
-    GRUB_USB_SPEED_HIGH
+    GRUB_USB_SPEED_HIGH,
+    GRUB_USB_SPEED_SUPER
   } grub_usb_speed_t;
 
 typedef int (*grub_usb_iterate_hook_t) (grub_usb_device_t dev, void *data);
@@ -130,7 +131,7 @@ struct grub_usb_controller_dev
   /* Value is calculated/estimated in driver - some TDs should be */
   /* reserved for posible concurrent control or "interrupt" transfers */
   grub_size_t max_bulk_tds;
-  
+
   /* The next host controller.  */
   struct grub_usb_controller_dev *next;
 };
@@ -174,7 +175,7 @@ struct grub_usb_hub_port
 {
   grub_uint64_t soft_limit_time;
   grub_uint64_t hard_limit_time;
-  enum { 
+  enum {
     PORT_STATE_NORMAL = 0,
     PORT_STATE_WAITING_FOR_STABLE_POWER = 1,
     PORT_STATE_FAILED_DEVICE = 2,
@@ -228,6 +229,9 @@ struct grub_usb_device
   int split_hubport;
 
   int split_hubaddr;
+
+  /* xHCI specific information */
+  int root_port;
 };
 
 
@@ -324,6 +328,10 @@ grub_usb_cancel_transfer (grub_usb_transfer_t trans);
 void
 grub_ehci_init_device (volatile void *regs);
 void
+grub_xhci_init_device (volatile void *regs);
+void
 grub_ehci_pci_scan (void);
+void
+grub_xhci_pci_scan (void);
 
 #endif /* GRUB_USB_H */

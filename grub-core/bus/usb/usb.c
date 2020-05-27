@@ -149,6 +149,7 @@ grub_usb_device_initialize (grub_usb_device_t dev)
       int currif;
       char *data;
       struct grub_usb_desc *desc;
+      struct grub_usb_desc_endp *endp;
 
       /* First just read the first 4 bytes of the configuration
 	 descriptor, after that it is known how many bytes really have
@@ -195,19 +196,34 @@ grub_usb_device_initialize (grub_usb_device_t dev)
 	  while (pos < config.totallen)
             {
               desc = (struct grub_usb_desc *)&data[pos];
-              if (desc->type == GRUB_USB_DESCRIPTOR_ENDPOINT)
-                break;
-              if (!desc->length)
-                {
-                  err = GRUB_USB_ERR_BADDEVICE;
-                  goto fail;
+              if (desc->type == GRUB_USB_DESCRIPTOR_ENDPOINT) {
+              /* check if SuperSpeed Endpoint Companion exist */
+                desc = (struct grub_usb_desc *)&data[pos+desc->length];
+                if (desc->type == GRUB_USB_DESCRIPTOR_SS_ENDPOINT_COMPANION) {
+                  /* create entpoint array without Companion */
+                  endp = grub_malloc (dev->config[i].interf[currif].descif->endpointcnt *
+                    sizeof(struct grub_usb_desc_endp));
+                  for (int j = 0; j<dev->config[i].interf[currif].descif->endpointcnt; j++) {
+                    grub_memcpy(&endp[j], &data[pos + j*(sizeof(struct grub_usb_desc_endp) + sizeof(struct grub_usb_desc_ssep))]
+                      , sizeof(struct grub_usb_desc_endp));
+                  }
+                } else {
+                  endp = (struct grub_usb_desc_endp *) &data[pos];
                 }
-              pos += desc->length;
-            }
+                break;
+              } else {
+                if (!desc->length)
+                  {
+                    err = GRUB_USB_ERR_BADDEVICE;
+                    goto fail;
+                  }
+                pos += desc->length;
+             }
+	  }
 
 	  /* Point to the first endpoint.  */
 	  dev->config[i].interf[currif].descendp
-	    = (struct grub_usb_desc_endp *) &data[pos];
+	    =  endp;
 	  pos += (sizeof (struct grub_usb_desc_endp)
 		  * dev->config[i].interf[currif].descif->endpointcnt);
 	}

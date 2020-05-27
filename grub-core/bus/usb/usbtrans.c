@@ -40,7 +40,7 @@ grub_usb_bulk_maxpacket (grub_usb_device_t dev,
 
 
 static grub_usb_err_t
-grub_usb_execute_and_wait_transfer (grub_usb_device_t dev, 
+grub_usb_execute_and_wait_transfer (grub_usb_device_t dev,
 				    grub_usb_transfer_t transfer,
 				    int timeout, grub_size_t *actual)
 {
@@ -130,6 +130,8 @@ grub_usb_control_msg (grub_usb_device_t dev,
   /* Determine the maximum packet size.  */
   if (dev->descdev.maxsize0)
     max = dev->descdev.maxsize0;
+  else if (dev->speed == GRUB_USB_SPEED_SUPER)
+    max = 512;
   else
     max = 64;
 
@@ -205,7 +207,7 @@ grub_usb_control_msg (grub_usb_device_t dev,
   grub_dprintf ("usb", "control: err=%d\n", err);
 
   grub_free (transfer->transactions);
-  
+
   grub_free (transfer);
   grub_dma_free (setupdata_chunk);
 

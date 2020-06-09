@@ -232,6 +232,7 @@ struct grub_usb_device
 
   /* xHCI specific information */
   int root_port;
+  grub_uint32_t route;
 };
 
 

@@ -803,14 +803,14 @@ grub_xhci_alloc_inctx(struct grub_xhci *x, int maxepid,
       break;
   }
 
+  // Route is greater zero on devices that are connected to a non root hub
+  if (dev->route) {
+    // XXX
 #if 0
-  // Set high-speed hub flags. ONLY NON ROOT HUBS
-  struct usbdevice_s *hubdev = usbdev->hub->usbdev;
-  if (hubdev) {
-      if (usbdev->speed == USB_LOWSPEED || usbdev->speed == USB_FULLSPEED) {
+      if (dev->speed == GRUB_USB_SPEED_LOW || dev->speed == GRUB_USB_SPEED_FULL) {
           struct xhci_pipe *hpipe = container_of(
               hubdev->defpipe, struct xhci_pipe, pipe);
-          if (hubdev->speed == USB_HIGHSPEED) {
+          if (hubdev->speed  == XHCI_USB_HIGHSPEED) {
               slot->ctx[2] |= hpipe->slotid;
               slot->ctx[2] |= (usbdev->port+1) << 8;
           } else {
@@ -818,15 +818,10 @@ grub_xhci_alloc_inctx(struct grub_xhci *x, int maxepid,
               slot->ctx[2] = hslot->ctx[2];
           }
       }
-      u32 route = 0;
-      while (usbdev->hub->usbdev) {
-          route <<= 4;
-          route |= (usbdev->port+1) & 0xf;
-          usbdev = usbdev->hub->usbdev;
-      }
-      slot->ctx[0]    |= route;
-  }
+
 #endif
+  }
+  slot->ctx[0]    |= dev->route;
   slot->ctx[1]    |= (dev->root_port+1) << 16;
 
   return in;

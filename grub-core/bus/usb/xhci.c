@@ -1556,10 +1556,11 @@ grub_xhci_portstatus (grub_usb_controller_t dev,
   end = grub_get_time_ms () + 100;
   for (;;) {
       portsc = grub_xhci_read32(&x->pr[port].portsc);
-      if (!(portsc & GRUB_XHCI_PORTSC_CCS))
+      if (!(portsc & GRUB_XHCI_PORTSC_CCS)) {
           // Device disconnected during reset
           grub_dprintf ("xhci","ERROR: %s device disconnected\n", __func__);
           return GRUB_USB_ERR_BADDEVICE;
+      }
       if (portsc & GRUB_XHCI_PORTSC_PED)
           // Reset complete
           break;

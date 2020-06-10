@@ -644,7 +644,7 @@ static int xhci_event_wait(struct grub_xhci *x,
             grub_uint32_t status = ring->evt.status;
             return (status >> 24) & 0xff;
         }
-        if (grub_get_time_ms () < end) {
+        if (grub_get_time_ms () > end) {
             xhci_check_status(x);
             grub_dprintf("xhci", "%s: Timeout waiting for event\n", __func__);
             return -1;
@@ -841,7 +841,7 @@ grub_xhci_reset (struct grub_xhci *x)
 
     end = grub_get_time_ms () + 32;
     while (grub_xhci_read32(&x->op->usbcmd) & GRUB_XHCI_STS_HCH) {
-      if (grub_get_time_ms () < end) {
+      if (grub_get_time_ms () > end) {
           return GRUB_USB_ERR_TIMEOUT;
       }
       grub_millisleep(1);
@@ -1331,6 +1331,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   // Now queue the transfers
   if (transfer->type == GRUB_USB_TRANSACTION_TYPE_CONTROL) {
     volatile struct grub_usb_packet_setup *setupdata;
+    grub_uint32_t data_count = 0;
     setupdata = (void *)transfer->transactions[0].data;
     grub_dprintf("xhci", "%s: CONTROLL TRANS req %d\n", __func__, setupdata->request);
     grub_dprintf("xhci", "%s: CONTROLL TRANS length %d\n", __func__, setupdata->length);
@@ -1365,7 +1366,14 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
           if (tr->size == 0 && (i + 1) == transfer->transcnt) {
             flags |= (TR_STATUS << 10) | TRB_TR_IOC;
           } else {
-            flags |= (TR_DATA << 10);
+            // Chain bit
+            if ((i + 2) != transfer->transcnt)
+              flags |= TRB_TR_CH;
+            if (!data_count)
+              flags |= (TR_DATA << 10);
+            else
+              flags |= (TR_NORMAL << 10);
+            data_count++;
           }
           break;
         case GRUB_USB_TRANSFER_TYPE_IN:
@@ -1373,13 +1381,21 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
           if (tr->size == 0 && (i + 1) == transfer->transcnt) {
             flags |= (TR_STATUS << 10) | TRB_TR_IOC;
           } else {
-            flags |= (TR_DATA << 10);
+            // Chain bit
+            if ((i + 2) != transfer->transcnt)
+              flags |= TRB_TR_CH;
+            if (!data_count)
+              flags |= (TR_DATA << 10);
+            else
+              flags |= (TR_NORMAL << 10);
+            data_count++;
           }
           flags |= TRB_TR_DIR; // DIR IN
           break;
       }
       xhci_trb_queue(cdata->reqs, (void *)tr->data, tr->size, flags);
-      cdata->transfer_size += tr->size;
+      if (tr->pid == GRUB_USB_TRANSFER_TYPE_IN || tr->pid == GRUB_USB_TRANSFER_TYPE_OUT)
+        cdata->transfer_size += tr->size;
     }
   } else if (transfer->type == GRUB_USB_TRANSACTION_TYPE_BULK) {
 
@@ -1480,10 +1496,8 @@ grub_xhci_cancel_transfer (grub_usb_controller_t dev,
   if (rc < 0) {
     return GRUB_USB_ERR_TIMEOUT;
   }
-  rc = xhci_cmd_reset_endpoint(x, cdata->slotid, cdata->epid, 1);
-  if (rc < 0) {
-    return GRUB_USB_ERR_TIMEOUT;
-  }
+
+  xhci_doorbell(x, cdata->slotid, cdata->epid);
 
   grub_free (cdata);
 

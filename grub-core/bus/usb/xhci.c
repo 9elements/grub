@@ -625,9 +625,33 @@ static int xhci_ring_busy(volatile struct grub_xhci_ring *ring)
 {
     grub_uint32_t eidx = grub_xhci_read32(&ring->eidx);
     grub_uint32_t nidx = grub_xhci_read32(&ring->nidx);
-    grub_dprintf("xhci", "%s: %d %d\n", __func__, eidx ,nidx);
 
     return (eidx != nidx);
+}
+
+// Returns free space in ring
+static int xhci_ring_free_space(volatile struct grub_xhci_ring *ring)
+{
+  grub_uint32_t eidx = grub_xhci_read32(&ring->eidx);
+  grub_uint32_t nidx = grub_xhci_read32(&ring->nidx);
+
+  // nidx is never 0, so reduce ring buffer size by one
+  return (eidx > nidx) ? eidx-nidx
+                : (ARRAY_SIZE(ring->ring) - 1) - nidx + eidx;
+}
+
+// Check if a ring is full
+static int xhci_ring_full(volatile struct grub_xhci_ring *ring)
+{
+  // Might need to insert one link TRB
+  return xhci_ring_free_space(ring) <= 1;
+}
+
+// Check if a ring is almost full
+static int xhci_ring_almost_full(volatile struct grub_xhci_ring *ring)
+{
+  // Might need to insert one link TRB
+  return xhci_ring_free_space(ring) <= 2;
 }
 
 // Wait for a ring to empty (all TRBs processed by hardware)
@@ -671,20 +695,46 @@ static void xhci_trb_fill(volatile struct grub_xhci_ring *ring
 static void xhci_trb_queue(volatile struct grub_xhci_ring *ring,
                            void *data, grub_uint32_t xferlen, grub_uint32_t flags)
 {
-    grub_dprintf("xhci", "%s: ring %p data %p len %d flags %x\n", __func__,
-    ring, data, xferlen, flags);
+  grub_dprintf("xhci", "%s: ring %p data %p len %d flags %x\n", __func__,
+  ring, data, xferlen, flags);
 
-    if (ring->nidx >= ARRAY_SIZE(ring->ring) - 1) {
-        xhci_trb_fill(ring, ring->ring, 0, (TR_LINK << 10) | TRB_LK_TC);
-        ring->nidx = 0;
-        ring->cs ^= 1;
-        grub_dprintf("xhci", "%s: ring %p [linked]\n", __func__, ring);
-    }
+  if (xhci_ring_full(ring)) {
+    grub_dprintf("xhci", "%s: ERROR: ring %p is full, discarding TRB\n",
+      __func__, ring);
+    return;
+  }
+  if (ring->nidx >= ARRAY_SIZE(ring->ring) - 1) {
+    xhci_trb_fill(ring, ring->ring, 0, (TR_LINK << 10) | TRB_LK_TC);
+    ring->nidx = 0;
+    ring->cs ^= 1;
+    grub_dprintf("xhci", "%s: ring %p [linked]\n", __func__, ring);
+  }
 
-    xhci_trb_fill(ring, data, xferlen, flags);
-    ring->nidx++;
-    grub_dprintf("xhci", "%s: ring %p [nidx %d, len %d]\n",
-            __func__, ring, ring->nidx, xferlen);
+  xhci_trb_fill(ring, data, xferlen, flags);
+  ring->nidx++;
+  grub_dprintf("xhci", "%s: ring %p [nidx %d, len %d]\n",
+          __func__, ring, ring->nidx, xferlen);
+}
+
+// Submit a command to the xhci controller ring and flush if full
+static int xhci_trb_queue_and_flush(struct grub_xhci *x,
+                                    grub_uint32_t slotid,
+                                    grub_uint32_t epid,
+                                    volatile struct grub_xhci_ring *ring,
+                                    void *data, grub_uint32_t xferlen, grub_uint32_t flags)
+{
+  if (xhci_ring_almost_full(ring)) {
+    grub_dprintf("xhci", "%s: almost full e %d n %d\n", __func__, ring->eidx, ring->nidx);
+    flags |= TRB_TR_IOC;
+  }
+  xhci_trb_queue(ring, data, xferlen, flags);
+  if (xhci_ring_almost_full(ring)) {
+    xhci_doorbell(x, slotid, epid);
+    int rc = xhci_event_wait(x, x->cmds, 1000);
+    grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
+    return rc;
+  }
+  return 0;
 }
 
 // Submit a command to the xhci controller ring
@@ -1282,6 +1332,28 @@ grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
 }
 
 static grub_usb_err_t
+grub_xhci_usb_to_grub_err (unsigned char status)
+{
+  if (status != CC_SUCCESS) {
+    grub_dprintf("xhci", "%s: xfer failed (cc %d)\n", __func__, status);
+  } else {
+    grub_dprintf("xhci", "%s: xfer done   (cc %d)\n", __func__, status);
+  }
+
+  if (status == CC_BABBLE_DETECTED) {
+    return GRUB_USB_ERR_BABBLE;
+  } else if (status == CC_DATA_BUFFER_ERROR) {
+    return GRUB_USB_ERR_DATA;
+  } else if (status == CC_STALL_ERROR) {
+    return GRUB_USB_ERR_STALL;
+  } else if (status != CC_SUCCESS) {
+    return GRUB_USB_ERR_NAK;
+  }
+
+  return GRUB_USB_ERR_NONE;
+}
+
+static grub_usb_err_t
 grub_xhci_setup_transfer (grub_usb_controller_t dev,
 			  grub_usb_transfer_t transfer)
 {
@@ -1289,6 +1361,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
   grub_uint32_t epid;
   grub_usb_err_t err;
+  int rc;
   struct grub_xhci_slots *slots = NULL;
 
    xhci_check_status(x);
@@ -1393,6 +1466,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
           flags |= TRB_TR_DIR; // DIR IN
           break;
       }
+      // Assume the ring has enough free space for all TRBs
       xhci_trb_queue(cdata->reqs, (void *)tr->data, tr->size, flags);
       if (tr->pid == GRUB_USB_TRANSFER_TYPE_IN || tr->pid == GRUB_USB_TRANSFER_TYPE_OUT)
         cdata->transfer_size += tr->size;
@@ -1416,7 +1490,14 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
       }
       if ((i + 1) == transfer->transcnt)
         flags |= TRB_TR_IOC;
-      xhci_trb_queue(cdata->reqs, (void *)tr->data, tr->size, flags);
+      // The ring might be to small, submit while adding new entries
+      rc = xhci_trb_queue_and_flush(x, cdata->slotid, cdata->epid,
+                               cdata->reqs, (void *)tr->data, tr->size, flags);
+      if (rc < 0) {
+        return GRUB_USB_ERR_TIMEOUT;
+      } else if (rc > 1) {
+        return grub_xhci_usb_to_grub_err(rc);
+      }
       cdata->transfer_size += tr->size;
     }
   }

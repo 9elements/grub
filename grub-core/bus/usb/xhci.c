@@ -466,8 +466,6 @@ struct grub_xhci_transfer_controller_data {
     grub_uint32_t             slotid;
     grub_uint32_t             epid;
     grub_uint32_t             transfer_size;
-    void                 *buf;
-    int                  bufused;
 };
 
 static struct grub_xhci *xhci;

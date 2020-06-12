@@ -1299,15 +1299,6 @@ grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
   grub_dprintf("xhci", "%s: ring %p, epid %d, max %d\n", __func__,
             reqs, epid, transfer->max);
   if (epid == 1 || slots == NULL) {
-
-    #if 0
-    if (usbdev->hub->usbdev) {
-        // Make sure parent hub is configured.
-        int ret = xhci_config_hub(usbdev->hub);
-        if (ret)
-          return GRUB_USB_ERR_BADDEVICE;
-    }
-    #endif
     // Enable slot.
     int slotid = xhci_cmd_enable_slot(x);
     if (slotid < 0) {

@@ -682,7 +682,7 @@ static void xhci_trb_fill(volatile struct grub_xhci_ring *ring
 {
     struct grub_xhci_trb *dst = &ring->ring[ring->nidx];
     if (flags & TRB_TR_IDT) {
-        grub_memcpy(&dst->ptr_low, data, xferlen);
+        grub_memcpy(&dst->ptr_low, data, xferlen & 0x1ffff);
     } else {
         dst->ptr_low = (grub_uint32_t)data;
         dst->ptr_high = 0;
@@ -695,8 +695,8 @@ static void xhci_trb_fill(volatile struct grub_xhci_ring *ring
 static void xhci_trb_queue(volatile struct grub_xhci_ring *ring,
                            void *data, grub_uint32_t xferlen, grub_uint32_t flags)
 {
-  grub_dprintf("xhci", "%s: ring %p data %p len %d flags %x\n", __func__,
-  ring, data, xferlen, flags);
+  grub_dprintf("xhci", "%s: ring %p data %p len %d flags 0x%x remain 0x%x\n", __func__,
+  ring, data, xferlen & 0x1ffff, flags, xferlen >> 17);
 
   if (xhci_ring_full(ring)) {
     grub_dprintf("xhci", "%s: ERROR: ring %p is full, discarding TRB\n",
@@ -728,7 +728,7 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
     flags |= TRB_TR_IOC;
   }
   xhci_trb_queue(ring, data, xferlen, flags);
-  if (xhci_ring_almost_full(ring)) {
+  if (xhci_ring_full(ring)) {
     xhci_doorbell(x, slotid, epid);
     int rc = xhci_event_wait(x, x->cmds, 1000);
     grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
@@ -1148,6 +1148,49 @@ grub_xhci_iterate (grub_usb_controller_iterate_hook_t hook, void *hook_data)
 }
 
 static grub_usb_err_t
+grub_xhci_update_hub_portcount (struct grub_xhci *x,
+			  grub_usb_transfer_t transfer,
+        grub_uint32_t slotid)
+{
+  grub_uint32_t epid = 0;
+  grub_usb_err_t err;
+
+  if (!transfer || !transfer->dev || !transfer->dev->nports)
+    return GRUB_USB_ERR_NONE;
+
+  struct grub_xhci_slotctx *hdslot = (void*)x->devs[slotid].ptr_low;
+  if ((hdslot->ctx[3] >> 27) == 3)
+    // Already configured
+    return 0;
+
+  grub_dprintf("xhci", "%s: updating hub config to %d ports\n", __func__,
+     transfer->dev->nports);
+
+  xhci_check_status(x);
+
+  // Allocate input context and initialize endpoint info.
+  struct grub_xhci_inctx *in = grub_xhci_alloc_inctx(x, epid, transfer->dev);
+  if (!in)
+    return GRUB_USB_ERR_INTERNAL;
+  in->add = (1 << epid);
+
+  struct grub_xhci_epctx *ep = (void*)&in[(epid+1) << x->flag64];
+  ep->ctx[0]   |= 1 << 26;
+  ep->ctx[1]   |= transfer->dev->nports << 24;
+
+  int cc = xhci_cmd_configure_endpoint(x, slotid, in);
+  grub_dma_free(in);
+
+  if (cc != CC_SUCCESS) {
+      grub_dprintf("xhci", "%s: reconf ctl endpoint: failed (cc %d)\n",
+              __func__, cc);
+    return GRUB_USB_ERR_BADDEVICE;
+  }
+
+  return GRUB_USB_ERR_NONE;
+}
+
+static grub_usb_err_t
 grub_xhci_update_max_paket_size (struct grub_xhci *x,
 			  grub_usb_transfer_t transfer,
         grub_uint32_t slotid)
@@ -1353,6 +1396,94 @@ grub_xhci_usb_to_grub_err (unsigned char status)
   return GRUB_USB_ERR_NONE;
 }
 
+static int
+grub_xhci_transfer_is_zlp(grub_usb_transfer_t transfer,
+                          int idx)
+{
+  if (idx >= transfer->transcnt)
+    return 0;
+
+  grub_usb_transaction_t tr = &transfer->transactions[idx];
+
+  return (tr->size == 0) &&
+    ((tr->pid == GRUB_USB_TRANSFER_TYPE_OUT) ||
+    (tr->pid == GRUB_USB_TRANSFER_TYPE_IN));
+}
+
+static int
+grub_xhci_transfer_is_last(grub_usb_transfer_t transfer,
+                           int idx)
+{
+    return (idx + 1) == transfer->transcnt;
+}
+
+static int
+grub_xhci_transfer_is_data(grub_usb_transfer_t transfer,
+                           int idx)
+{
+  grub_usb_transaction_t tr;
+
+  if (idx >= transfer->transcnt)
+    return 0;
+
+  tr = &transfer->transactions[idx];
+  if (tr->size == 0 ||
+      (tr->pid == GRUB_USB_TRANSFER_TYPE_SETUP))
+    return 0;
+
+  // If there's are no DATA pakets before it's a DATA paket
+  for (int i = idx - 1; i >= 0; i--) {
+    tr = &transfer->transactions[i];
+    if (tr->size > 0 &&
+        ((tr->pid == GRUB_USB_TRANSFER_TYPE_OUT) ||
+        (tr->pid == GRUB_USB_TRANSFER_TYPE_IN))) {
+          return 0;
+    }
+  }
+  return 1;
+}
+
+static int
+grub_xhci_transfer_next_is_data(grub_usb_transfer_t transfer,
+                                int idx)
+{
+  return grub_xhci_transfer_is_data(transfer, idx + 1);
+}
+
+static int
+grub_xhci_transfer_is_normal(grub_usb_transfer_t transfer,
+                            int idx)
+{
+  grub_usb_transaction_t tr;
+  int first = 1;
+
+  if (idx >= transfer->transcnt)
+    return 0;
+
+  tr = &transfer->transactions[idx];
+  if (tr->size == 0 ||
+      (tr->pid == GRUB_USB_TRANSFER_TYPE_SETUP))
+    return 0;
+
+  // If there's at least one DATA paket before it's a normal
+  for (int i = idx - 1; i >= 0; i--) {
+    tr = &transfer->transactions[i];
+    if (tr->size > 0 &&
+        ((tr->pid == GRUB_USB_TRANSFER_TYPE_OUT) ||
+        (tr->pid == GRUB_USB_TRANSFER_TYPE_IN))) {
+          return 1;
+    }
+  }
+  return 0;
+}
+
+static int
+grub_xhci_transfer_next_is_normal(grub_usb_transfer_t transfer,
+                                  int idx)
+{
+  return grub_xhci_transfer_is_normal(transfer, idx + 1);
+}
+
 static grub_usb_err_t
 grub_xhci_setup_transfer (grub_usb_controller_t dev,
 			  grub_usb_transfer_t transfer)
@@ -1383,8 +1514,17 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   // Update the max packet size once descdev.maxsize0 is valid
   if (epid == 1 &&
     (slots->max_packet < transfer->dev->descdev.maxsize0)) {
-    slots->max_packet = transfer->dev->descdev.maxsize0;
+    slots->max_packet = transfer->dev->descdev.maxsize0) {
     err = grub_xhci_update_max_paket_size(x, transfer, slots->slotid);
+    if (err != GRUB_USB_ERR_NONE) {
+      grub_dprintf("xhci", "%s: Updating max paket size failed\n", __func__);
+      return err;
+    }
+  }
+  if (epid == 1 &&
+      transfer->dev->descdev.class == 9 &&
+      transfer->dev->nports > 0) {
+    err = grub_xhci_update_hub_portcount(x, transfer, slots->slotid);
     if (err != GRUB_USB_ERR_NONE) {
       grub_dprintf("xhci", "%s: Updating max paket size failed\n", __func__);
       return err;
@@ -1415,6 +1555,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
     for (int i = 0; i < transfer->transcnt; i++)
     {
       grub_uint32_t flags = 0;
+      grub_uint32_t remaining_td;
       grub_usb_transaction_t tr = &transfer->transactions[i];
 
       switch (tr->pid) {
@@ -1424,7 +1565,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
             grub_dprintf("xhci", "%s: tr->size %d SETUP PKG\n", __func__, tr->size);
 
           flags |= (TR_SETUP << 10);
-          flags |= TRB_TR_IDT; // Next TRB is data
+          flags |= TRB_TR_IDT;
 
           if (transfer->size > 0) {
             if (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) {
@@ -1436,40 +1577,38 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
           break;
         case GRUB_USB_TRANSFER_TYPE_OUT:
           grub_dprintf("xhci", "%s: OUT PKG\n", __func__);
-          if (tr->size == 0 && (i + 1) == transfer->transcnt) {
-            flags |= (TR_STATUS << 10) | TRB_TR_IOC;
-          } else {
-            // Chain bit
-            if ((i + 2) != transfer->transcnt)
-              flags |= TRB_TR_CH;
-            if (!data_count)
-              flags |= (TR_DATA << 10);
-            else
-              flags |= (TR_NORMAL << 10);
-            data_count++;
-          }
+          cdata->transfer_size += tr->size;
           break;
         case GRUB_USB_TRANSFER_TYPE_IN:
           grub_dprintf("xhci", "%s: IN PKG\n", __func__);
-          if (tr->size == 0 && (i + 1) == transfer->transcnt) {
-            flags |= (TR_STATUS << 10) | TRB_TR_IOC;
-          } else {
-            // Chain bit
-            if ((i + 2) != transfer->transcnt)
-              flags |= TRB_TR_CH;
-            if (!data_count)
-              flags |= (TR_DATA << 10);
-            else
-              flags |= (TR_NORMAL << 10);
-            data_count++;
-          }
+          cdata->transfer_size += tr->size;
           flags |= TRB_TR_DIR; // DIR IN
           break;
       }
+
+      if (grub_xhci_transfer_is_normal(transfer, i)) {
+        flags |= (TR_NORMAL << 10);
+      } else if (grub_xhci_transfer_is_data(transfer, i)) {
+        flags |= (TR_DATA << 10);
+      } else if (grub_xhci_transfer_is_zlp(transfer, i)) {
+        flags |= (TR_STATUS << 10);
+      }
+      if (grub_xhci_transfer_next_is_normal(transfer, i)) {
+        flags |= TRB_TR_CH;
+      }
+      if (grub_xhci_transfer_is_last(transfer, i)) {
+        flags |= TRB_TR_IOC;
+      }
+
+      // Seems not required. Seabios doesn't have it ....
+      remaining_td = ((transfer->transcnt - 1) -i);
+      if (remaining_td > 31)
+        remaining_td = 31;
+
       // Assume the ring has enough free space for all TRBs
-      xhci_trb_queue(cdata->reqs, (void *)tr->data, tr->size, flags);
-      if (tr->pid == GRUB_USB_TRANSFER_TYPE_IN || tr->pid == GRUB_USB_TRANSFER_TYPE_OUT)
-        cdata->transfer_size += tr->size;
+      xhci_trb_queue(cdata->reqs, (void *)tr->data,
+                     (remaining_td << 17) | tr->size, flags);
+
     }
   } else if (transfer->type == GRUB_USB_TRANSACTION_TYPE_BULK) {
 
@@ -1480,16 +1619,17 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
       switch (tr->pid) {
         case GRUB_USB_TRANSFER_TYPE_OUT:
            grub_dprintf("xhci", "%s: OUT PKG\n", __func__);
-
+           cdata->transfer_size += tr->size;
           break;
         case GRUB_USB_TRANSFER_TYPE_IN:
            grub_dprintf("xhci", "%s: IN PKG\n", __func__);
-
+           cdata->transfer_size += tr->size;
           flags |= TRB_TR_DIR; // DIR IN
           break;
       }
-      if ((i + 1) == transfer->transcnt)
+      if (grub_xhci_transfer_is_last(transfer, i)) {
         flags |= TRB_TR_IOC;
+      }
       // The ring might be to small, submit while adding new entries
       rc = xhci_trb_queue_and_flush(x, cdata->slotid, cdata->epid,
                                cdata->reqs, (void *)tr->data, tr->size, flags);
@@ -1498,7 +1638,6 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
       } else if (rc > 1) {
         return grub_xhci_usb_to_grub_err(rc);
       }
-      cdata->transfer_size += tr->size;
     }
   }
   xhci_doorbell(x, cdata->slotid, cdata->epid);

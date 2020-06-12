@@ -1350,7 +1350,7 @@ grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
     x->slots_meta[slotid].slotid = slotid;
     x->slots_meta[slotid].dev = transfer->dev;
     x->slots_meta[slotid].dev_addr = 0;     //new->dev_addr = 0; FIXME
-    x->slots_meta[slotid].max_packet = 8;
+    x->slots_meta[slotid].max_packet = 0;
     slots = &x->slots_meta[slotid];
 
     *out = &x->slots_meta[slotid];
@@ -1513,8 +1513,9 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
 
   // Update the max packet size once descdev.maxsize0 is valid
   if (epid == 1 &&
-    (slots->max_packet < transfer->dev->descdev.maxsize0)) {
-    slots->max_packet = transfer->dev->descdev.maxsize0) {
+    (slots->max_packet == 0) &&
+    (transfer->dev->descdev.maxsize0 > 0)) {
+    slots->max_packet = transfer->dev->descdev.maxsize0;
     err = grub_xhci_update_max_paket_size(x, transfer, slots->slotid);
     if (err != GRUB_USB_ERR_NONE) {
       grub_dprintf("xhci", "%s: Updating max paket size failed\n", __func__);
@@ -1544,7 +1545,6 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   // Now queue the transfers
   if (transfer->type == GRUB_USB_TRANSACTION_TYPE_CONTROL) {
     volatile struct grub_usb_packet_setup *setupdata;
-    grub_uint32_t data_count = 0;
     setupdata = (void *)transfer->transactions[0].data;
     grub_dprintf("xhci", "%s: CONTROLL TRANS req %d\n", __func__, setupdata->request);
     grub_dprintf("xhci", "%s: CONTROLL TRANS length %d\n", __func__, setupdata->length);
@@ -1552,10 +1552,12 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
     if (setupdata && setupdata->request == GRUB_USB_REQ_SET_ADDRESS)
       return GRUB_USB_ERR_NONE;
 
+    if (transfer->transcnt < 2)
+      return GRUB_USB_ERR_INTERNAL;
+
     for (int i = 0; i < transfer->transcnt; i++)
     {
       grub_uint32_t flags = 0;
-      grub_uint32_t remaining_td;
       grub_usb_transaction_t tr = &transfer->transactions[i];
 
       switch (tr->pid) {
@@ -1568,7 +1570,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
           flags |= TRB_TR_IDT;
 
           if (transfer->size > 0) {
-            if (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) {
+            if (transfer->transactions[i+1].pid == GRUB_USB_TRANSFER_TYPE_IN) {
               flags |= (3 << 16); // TRT IN
             } else {
               flags |= (2 << 16); // TRT OUT
@@ -1600,14 +1602,8 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
         flags |= TRB_TR_IOC;
       }
 
-      // Seems not required. Seabios doesn't have it ....
-      remaining_td = ((transfer->transcnt - 1) -i);
-      if (remaining_td > 31)
-        remaining_td = 31;
-
       // Assume the ring has enough free space for all TRBs
-      xhci_trb_queue(cdata->reqs, (void *)tr->data,
-                     (remaining_td << 17) | tr->size, flags);
+      xhci_trb_queue(cdata->reqs, (void *)tr->data, tr->size, flags);
 
     }
   } else if (transfer->type == GRUB_USB_TRANSACTION_TYPE_BULK) {

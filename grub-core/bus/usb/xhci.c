@@ -1638,6 +1638,10 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
 {
   grub_uint32_t status;
   grub_uint32_t remaining;
+  grub_uint32_t slotid;
+  grub_uint32_t epid;
+
+  grub_usb_err_t err;
   int rc;
 
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
@@ -1661,31 +1665,30 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
       return GRUB_USB_ERR_WAIT;
   }
 
+  slotid = cdata->slotid;
+  epid = cdata->epid;
+
   // DONE
   grub_free(cdata);
 
-  if (status != CC_SUCCESS) {
-    grub_dprintf("xhci", "%s: xfer failed (cc %d)\n", __func__, status);
-  }
-  if (status == CC_BABBLE_DETECTED) {
-    return GRUB_USB_ERR_BABBLE;
-  } else if (status == CC_DATA_BUFFER_ERROR) {
-    return GRUB_USB_ERR_DATA;
-  } else if (status == CC_STALL_ERROR) {
-    // Clear the stall by resetting the endpoint
-    rc = xhci_cmd_reset_endpoint(x, cdata->slotid, cdata->epid, 1);
-    if (rc < 0) {
-      return GRUB_USB_ERR_TIMEOUT;
-    }
-    return GRUB_USB_ERR_STALL;
-  } else if (remaining > 0) {
-    return GRUB_USB_ERR_DATA;
-  }  else if (status != CC_SUCCESS) {
-    return GRUB_USB_ERR_NAK;
-  }
   grub_dprintf("xhci", "%s: xfer done\n", __func__);
 
-  return GRUB_USB_ERR_NONE;
+  err = grub_xhci_usb_to_grub_err(status);
+  if (err != GRUB_USB_ERR_NONE) {
+    if (status == CC_STALL_ERROR) {
+      // Clear the stall by resetting the endpoint
+      rc = xhci_cmd_reset_endpoint(x, slotid, epid, 1);
+
+      if (rc < 0) {
+        return GRUB_USB_ERR_TIMEOUT;
+      }
+      return GRUB_USB_ERR_STALL;
+    } else if (remaining > 0) {
+      return GRUB_USB_ERR_DATA;
+    }
+  }
+
+  return err;
 }
 
 static grub_usb_err_t

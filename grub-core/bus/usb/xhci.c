@@ -1827,18 +1827,18 @@ grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
     {
       *changed = 1;
       /* Reset bit Connect Status Change */
-      //grub_xhci_port_setbits (x, port, GRUB_XHCI_PORTSC_CSC);
+      grub_xhci_port_setbits (x, port, GRUB_XHCI_PORTSC_CSC);
     }
   else
     *changed = 0;
-#if 0
+
   grub_dprintf("xhci", "port #%d: 0x%08x,%s%s%s pls %d, speed %d\n",
           port, portsc,
           (portsc & GRUB_XHCI_PORTSC_PP)  ? " powered," : "",
           (portsc & GRUB_XHCI_PORTSC_PED) ? " enabled," : "",
           *changed ? "changed, " : "",
           pls, speed);
-#endif
+
   if (!(portsc & GRUB_XHCI_PORTSC_CCS))
     {				/* We should reset related "reset" flag in not connected state */
       x->reset &= ~(1 << port);

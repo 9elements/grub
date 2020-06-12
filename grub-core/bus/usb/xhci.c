@@ -794,6 +794,19 @@ static int xhci_cmd_reset_endpoint(struct grub_xhci *x, grub_uint32_t slotid
                            , (preserve << 9) | (CR_RESET_ENDPOINT << 10) | (epid << 16) | (slotid << 24));
 }
 
+static int xhci_cmd_set_dequeue_pointer(struct grub_xhci *x, grub_uint32_t slotid
+                                       , grub_uint32_t epid
+                                       , grub_uint64_t tr_deque_pointer)
+{
+    xhci_trb_queue(x->cmds, (void *)tr_deque_pointer, 0,
+                   (CR_SET_TR_DEQUEUE << 10) | (epid << 16) | (slotid << 24));
+    xhci_doorbell(x, 0, 0);
+    int rc = xhci_event_wait(x, x->cmds, 1000);
+    grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
+
+    return rc;
+}
+
 static int xhci_cmd_address_device(struct grub_xhci *x, grub_uint32_t slotid
                                    , struct grub_xhci_inctx *inctx)
 {
@@ -1706,8 +1719,16 @@ grub_xhci_cancel_transfer (grub_usb_controller_t dev,
   if (rc < 0) {
     return GRUB_USB_ERR_TIMEOUT;
   }
+  rc = xhci_cmd_set_dequeue_pointer(x, cdata->slotid, cdata->epid, ((grub_uint64_t)&cdata->reqs->ring[0]) | 1);
+  if (rc < 0) {
+    return GRUB_USB_ERR_TIMEOUT;
+  }
 
   xhci_doorbell(x, cdata->slotid, cdata->epid);
+  rc = xhci_event_wait(x, cdata->reqs, 1000);
+  if (rc < 0) {
+    return GRUB_USB_ERR_TIMEOUT;
+  }
 
   grub_free (cdata);
 

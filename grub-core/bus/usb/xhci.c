@@ -458,7 +458,6 @@ struct grub_xhci_port {
 
 
 struct grub_xhci_transfer_controller_data {
-    struct grub_xhci_ring     *reqs;
     grub_uint32_t             transfer_size;
 };
 
@@ -1471,6 +1470,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
   grub_uint32_t epid;
   grub_usb_err_t err;
+  struct grub_xhci_ring *reqs;
   int rc;
   struct grub_xhci_priv *priv;
 
@@ -1522,7 +1522,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   if (!cdata)
     return GRUB_USB_ERR_INTERNAL;
 
-  cdata->reqs = priv->enpoint_trbs[epid];
+  reqs = priv->enpoint_trbs[epid];
 
   transfer->controller_data = cdata;
 
@@ -1587,7 +1587,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
       }
 
       // Assume the ring has enough free space for all TRBs
-      xhci_trb_queue(cdata->reqs, (void *)tr->data, tr->size, flags);
+      xhci_trb_queue(reqs, (void *)tr->data, tr->size, flags);
 
     }
   } else if (transfer->type == GRUB_USB_TRANSACTION_TYPE_BULK) {
@@ -1612,7 +1612,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
       }
       // The ring might be to small, submit while adding new entries
       rc = xhci_trb_queue_and_flush(x, priv->slotid, epid,
-                               cdata->reqs, (void *)tr->data, tr->size, flags);
+                               reqs, (void *)tr->data, tr->size, flags);
       if (rc < 0) {
         return GRUB_USB_ERR_TIMEOUT;
       } else if (rc > 1) {
@@ -1631,6 +1631,8 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
 {
   grub_uint32_t status;
   grub_uint32_t remaining;
+  grub_uint32_t epid;
+  struct grub_xhci_ring *reqs;
 
   grub_usb_err_t err;
   int rc;
@@ -1648,9 +1650,18 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
   xhci_check_status(x);
   xhci_process_events(x);
 
+  if (transfer->endpoint == 0) {
+      epid = 1;
+  } else {
+      epid = (transfer->endpoint & 0x0f) * 2;
+      epid += (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
+  }
+
+  reqs = priv->enpoint_trbs[epid];
+
   // Get current status from event ring buffer
-  status = (cdata->reqs->evt.status>> 24) & 0xff;
-  remaining = cdata->reqs->evt.status & 0xffffff;
+  status = (reqs->evt.status>> 24) & 0xff;
+  remaining = reqs->evt.status & 0xffffff;
 
   if (status != CC_STOPPED_LENGTH_INVALID) {
     *actual = cdata->transfer_size - remaining;
@@ -1658,7 +1669,7 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
     *actual = 0;
   }
 
-  if (xhci_ring_busy(cdata->reqs)) {
+  if (xhci_ring_busy(reqs)) {
       return GRUB_USB_ERR_WAIT;
   }
 
@@ -1670,13 +1681,6 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
   err = grub_xhci_usb_to_grub_err(status);
   if (err != GRUB_USB_ERR_NONE) {
     if (status == CC_STALL_ERROR) {
-      grub_uint32_t epid;
-      if (transfer->endpoint == 0) {
-          epid = 1;
-      } else {
-          epid = (transfer->endpoint & 0x0f) * 2;
-          epid += (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
-      }
       // Clear the stall by resetting the endpoint
       rc = xhci_cmd_reset_endpoint(x, priv->slotid, epid, 1);
 
@@ -1698,6 +1702,8 @@ grub_xhci_cancel_transfer (grub_usb_controller_t dev,
 {
   grub_uint32_t reg;
   grub_uint32_t epid;
+  struct grub_xhci_ring *reqs;
+
   int rc;
 
   if (!dev->data || !transfer->controller_data || !transfer->dev ||
@@ -1717,17 +1723,19 @@ grub_xhci_cancel_transfer (grub_usb_controller_t dev,
       epid += (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
   }
 
+  reqs = priv->enpoint_trbs[epid];
+
   rc = xhci_cmd_stop_endpoint(x, priv->slotid, epid, 0);
   if (rc < 0) {
     return GRUB_USB_ERR_TIMEOUT;
   }
-  rc = xhci_cmd_set_dequeue_pointer(x, priv->slotid, epid, ((grub_uint64_t)&cdata->reqs->ring[0]) | 1);
+  rc = xhci_cmd_set_dequeue_pointer(x, priv->slotid, epid, ((grub_uint64_t)&reqs->ring[0]) | 1);
   if (rc < 0) {
     return GRUB_USB_ERR_TIMEOUT;
   }
 
   xhci_doorbell(x, priv->slotid, epid);
-  rc = xhci_event_wait(x, cdata->reqs, 1000);
+  rc = xhci_event_wait(x, reqs, 1000);
   if (rc < 0) {
     return GRUB_USB_ERR_TIMEOUT;
   }

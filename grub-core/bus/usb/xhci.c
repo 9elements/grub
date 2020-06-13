@@ -1859,6 +1859,18 @@ grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
   return GRUB_USB_SPEED_NONE;
 }
 
+static grub_usb_err_t
+grub_xhci_attach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
+{
+  return GRUB_USB_ERR_NONE;
+}
+
+static grub_usb_err_t
+grub_xhci_detach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
+{
+  return GRUB_USB_ERR_NONE;
+}
+
 static void
 grub_xhci_halt(struct grub_xhci *x)
 {
@@ -1922,8 +1934,8 @@ static struct grub_usb_controller_dev usb_controller = {
   .hubports = grub_xhci_hubports,
   .portstatus = grub_xhci_portstatus,
   .detect_dev = grub_xhci_detect_dev,
-  .attach_dev = NULL,
-  .detach_dev = NULL,
+  .attach_dev = grub_xhci_attach_dev,
+  .detach_dev = grub_xhci_detach_dev,
   /* estimated max. count of TDs for one bulk transfer */
   .max_bulk_tds = GRUB_XHCI_N_TD * 3 / 4
 };

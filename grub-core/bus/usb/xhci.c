@@ -881,12 +881,12 @@ grub_xhci_alloc_inctx(struct grub_xhci *x, int maxepid,
   return in;
 }
 
-void
+static grub_err_t
 grub_xhci_reset (struct grub_xhci *x)
 {
-  grub_uint32_t hcs1, hcc, reg;
+  grub_uint32_t reg;
   grub_uint32_t end;
-  int i;
+  grub_uint32_t i;
 
   reg = grub_xhci_read32(&x->op->usbcmd);
   if (reg & GRUB_XHCI_CMD_RS) {
@@ -985,6 +985,8 @@ grub_xhci_reset (struct grub_xhci *x)
 		grub_xhci_read32 (&x->ir->erstba_low));
 
   xhci_check_status(x);
+
+  return GRUB_USB_ERR_NONE;
 }
 
 /* PCI iteration function... */
@@ -1197,7 +1199,6 @@ grub_xhci_update_max_paket_size (struct grub_xhci *x,
         grub_uint32_t slotid)
 {
   grub_uint32_t epid = 1;
-  grub_usb_err_t err;
 
   if (!transfer || !transfer->dev || !transfer->dev->descdev.maxsize0)
     return GRUB_USB_ERR_NONE;
@@ -1239,7 +1240,6 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
 {
   grub_uint32_t epid;
   volatile struct grub_xhci_ring     *reqs;
-  grub_usb_err_t err;
 
   if (!x || !priv) {
     return GRUB_USB_ERR_INTERNAL;
@@ -1422,18 +1422,10 @@ grub_xhci_transfer_is_data(grub_usb_transfer_t transfer,
 }
 
 static int
-grub_xhci_transfer_next_is_data(grub_usb_transfer_t transfer,
-                                int idx)
-{
-  return grub_xhci_transfer_is_data(transfer, idx + 1);
-}
-
-static int
 grub_xhci_transfer_is_normal(grub_usb_transfer_t transfer,
                             int idx)
 {
   grub_usb_transaction_t tr;
-  int first = 1;
 
   if (idx >= transfer->transcnt)
     return 0;
@@ -1614,6 +1606,8 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
            cdata->transfer_size += tr->size;
           flags |= TRB_TR_DIR; // DIR IN
           break;
+        case GRUB_USB_TRANSFER_TYPE_SETUP:
+          break;
       }
       if (grub_xhci_transfer_is_last(transfer, i)) {
         flags |= TRB_TR_IOC;
@@ -1703,7 +1697,6 @@ static grub_usb_err_t
 grub_xhci_cancel_transfer (grub_usb_controller_t dev,
 			grub_usb_transfer_t transfer)
 {
-  grub_uint32_t reg;
   grub_uint8_t epid;
   struct grub_xhci_ring *reqs;
 
@@ -1928,7 +1921,7 @@ grub_xhci_detach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
   if (dev->xhci_priv) {
     priv = dev->xhci_priv;
     // Stop endpoints and free ring buffer
-    for (int i = 0; i < 32; i++) {
+    for (i = 0; i < 32; i++) {
       if (priv->enpoint_trbs[i] != NULL) {
         cc = xhci_cmd_stop_endpoint(x, priv->slotid, i, 1);
         if (cc != CC_SUCCESS) {
@@ -1989,7 +1982,7 @@ grub_xhci_fini_hw (int noreturn __attribute__ ((unused)))
       grub_xhci_halt (x);
 
       /* Reset xHCI */
-      grub_xhci_reset (x);
+      return grub_xhci_reset (x);
     }
 
   return GRUB_ERR_NONE;

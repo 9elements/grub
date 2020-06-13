@@ -1848,21 +1848,80 @@ grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
 static grub_usb_err_t
 grub_xhci_attach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
 {
-  if (!dev)
+  struct grub_xhci *x = (struct grub_xhci *) ctrl->data;
+  grub_usb_err_t err;
+  grub_uint32_t max;
+
+  grub_dprintf("xhci", "%s: dev=%p\n", __func__, dev);
+
+  if (!dev || !x)
     return GRUB_USB_ERR_INTERNAL;
 
   dev->xhci_priv = grub_zalloc (sizeof (struct grub_xhci_priv));
-  return GRUB_USB_ERR_NONE;
+  if (!dev->xhci_priv) {
+    return GRUB_USB_ERR_INTERNAL;
+  }
+
+  switch (dev->speed) {
+    case GRUB_USB_SPEED_LOW:
+      max = 8;
+      break;
+    case GRUB_USB_SPEED_FULL:
+    case GRUB_USB_SPEED_HIGH:
+      max = 64;
+      break;
+    case GRUB_USB_SPEED_SUPER:
+      max = 512;
+      break;
+    default:
+    case GRUB_USB_SPEED_NONE:
+     max = 0;
+  }
+
+  // Assign a slot, assign an address and configure endpoint 0
+  err = grub_xhci_prepare_endpoint(x, dev,
+                                  0,
+                                  0,
+                                  GRUB_USB_TRANSACTION_TYPE_CONTROL,
+                                  max,
+                                  dev->xhci_priv);
+
+  return err;
 }
 
 static grub_usb_err_t
 grub_xhci_detach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
 {
+  struct grub_xhci *x = (struct grub_xhci *) ctrl->data;
+  struct grub_xhci_priv *priv;
+  int cc, i;
+
+  grub_dprintf("xhci", "%s: dev=%p\n", __func__, dev);
+
   if (!dev)
     return GRUB_USB_ERR_INTERNAL;
 
-  if (dev->xhci_priv)
+  if (dev->xhci_priv) {
+    priv = dev->xhci_priv;
+    // Stop endpoints and free ring buffer
+    for (int i = 0; i < 32; i++) {
+      if (priv->enpoint_trbs[i] != NULL) {
+        cc = xhci_cmd_stop_endpoint(x, priv->slotid, i, 1);
+        if (cc != CC_SUCCESS) {
+          grub_dprintf("xhci", "Failed to disable EP%d on slot %d\n", i, priv->slotid);
+        }
+        grub_dma_free(priv->enpoint_trbs[i]);
+        priv->enpoint_trbs[i] = NULL;
+      }
+    }
+
+    cc = xhci_cmd_disable_slot(x, priv->slotid);
+    if (cc != CC_SUCCESS) {
+      return GRUB_USB_ERR_INTERNAL;
+    }
+
     grub_free(dev->xhci_priv);
+  }
 
   dev->xhci_priv = NULL;
 

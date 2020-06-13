@@ -1232,29 +1232,31 @@ grub_xhci_update_max_paket_size (struct grub_xhci *x,
 }
 
 static grub_usb_err_t
-grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
-			  grub_usb_transfer_t transfer,
+grub_xhci_prepare_endpoint (struct grub_xhci *x,
+        struct grub_usb_device *dev,
+        grub_uint8_t endpoint,
+        grub_transfer_type_t dir,
+        grub_transaction_type_t type,
+        grub_uint32_t maxpaket,
         struct grub_xhci_priv *priv)
 {
-  struct grub_xhci *x = (struct grub_xhci *) dev->data;
   grub_uint32_t epid;
   volatile struct grub_xhci_ring     *reqs;
   grub_usb_err_t err;
 
-  xhci_check_status(x);
-
-  if (!dev || !transfer || !transfer->dev || !priv) {
+  if (!x || !priv) {
     return GRUB_USB_ERR_INTERNAL;
   }
 
-  if (transfer->endpoint == 0) {
+  xhci_check_status(x);
+
+  if (endpoint == 0) {
     epid = 1;
   } else {
-    epid = (transfer->endpoint & 0x0f) * 2;
-    epid += (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
+    epid = (endpoint & 0x0f) * 2;
+    epid += (dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
   }
-  grub_dprintf("xhci", "%s: epid %d, dev %d\n", __func__,
-            epid, transfer->dev->addr);
+  grub_dprintf("xhci", "%s: epid %d\n", __func__, epid);
 
   if (priv->slotid > 0 && priv->enpoint_trbs[epid] != NULL) {
     return GRUB_USB_ERR_NONE;
@@ -1267,13 +1269,13 @@ grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
   reqs->cs = 1;
 
   // Allocate input context and initialize endpoint info.
-  struct grub_xhci_inctx *in = grub_xhci_alloc_inctx(x, epid, transfer->dev);
+  struct grub_xhci_inctx *in = grub_xhci_alloc_inctx(x, epid, dev);
   if (!in)
     return GRUB_USB_ERR_INTERNAL;
   in->add = 0x01 | (1 << epid);
 
   struct grub_xhci_epctx *ep = (void*)&in[(epid+1) << x->flag64];
-  switch (transfer->type) {
+  switch (type) {
     case GRUB_USB_TRANSACTION_TYPE_CONTROL:
       ep->ctx[1]   |= 0 << 3;
       break;
@@ -1281,21 +1283,16 @@ grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
       ep->ctx[1]   |= 2 << 3;
       break;
   }
-  if (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN
-      || transfer->type == GRUB_USB_TRANSACTION_TYPE_CONTROL)
+  if (dir == GRUB_USB_TRANSFER_TYPE_IN
+      || type== GRUB_USB_TRANSACTION_TYPE_CONTROL)
       ep->ctx[1] |= 1 << 5;
-  ep->ctx[1]   |= transfer->max << 16;
+  ep->ctx[1]   |= maxpaket << 16;
   ep->deq_low  = (grub_uint32_t)&reqs->ring[0];
   ep->deq_low  |= 1;         // dcs
-  ep->length   = transfer->max;
+  ep->length   = maxpaket;
 
-  grub_dprintf("xhci", "%s: dev ports %d hub_endpoint %p class %x\n", __func__,
-            transfer->dev->nports,
-            transfer->dev->hub_endpoint,
-            transfer->dev->descdev.class
-            );
   grub_dprintf("xhci", "%s: ring %p, epid %d, max %d\n", __func__,
-            reqs, epid, transfer->max);
+            reqs, epid, maxpaket);
   if (epid == 1 || priv->slotid == 0) {
     // Enable slot.
     int slotid = xhci_cmd_enable_slot(x);
@@ -1492,7 +1489,13 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   }
 
   priv = transfer->dev->xhci_priv;
-  err = grub_xhci_prepare_endpoint(dev, transfer, priv);
+  err = grub_xhci_prepare_endpoint(x, transfer->dev,
+                                  transfer->endpoint,
+                                  transfer->dir,
+                                  transfer->type,
+                                  transfer->max,
+                                  priv);
+
   if (err != GRUB_USB_ERR_NONE)
     return err;
 

@@ -453,6 +453,10 @@ struct grub_xhci
   struct grub_xhci_slots *slots_meta;
 };
 
+struct grub_xhci_priv {
+
+};
+
 struct grub_xhci_port {
     grub_uint32_t portsc;
     grub_uint32_t portpmsc;
@@ -1862,12 +1866,24 @@ grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
 static grub_usb_err_t
 grub_xhci_attach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
 {
+  if (!dev)
+    return GRUB_USB_ERR_INTERNAL;
+
+  dev->xhci_priv = grub_zalloc (sizeof (struct grub_xhci_priv));
   return GRUB_USB_ERR_NONE;
 }
 
 static grub_usb_err_t
 grub_xhci_detach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
 {
+  if (!dev)
+    return GRUB_USB_ERR_INTERNAL;
+
+  if (dev->xhci_priv)
+    grub_free(dev->xhci_priv);
+
+  dev->xhci_priv = NULL;
+
   return GRUB_USB_ERR_NONE;
 }
 

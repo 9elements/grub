@@ -1922,6 +1922,8 @@ static struct grub_usb_controller_dev usb_controller = {
   .hubports = grub_xhci_hubports,
   .portstatus = grub_xhci_portstatus,
   .detect_dev = grub_xhci_detect_dev,
+  .attach_dev = NULL,
+  .detach_dev = NULL,
   /* estimated max. count of TDs for one bulk transfer */
   .max_bulk_tds = GRUB_XHCI_N_TD * 3 / 4
 };

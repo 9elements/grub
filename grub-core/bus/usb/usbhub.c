@@ -70,6 +70,15 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
   dev->root_port = root_portno;
   dev->route = route;
 
+  if (controller->dev->attach_dev) {
+    err = controller->dev->attach_dev (controller, dev);
+    if (err)
+    {
+      grub_free (dev);
+      return NULL;
+    }
+  }
+
   err = grub_usb_device_initialize (dev);
   if (err)
     {
@@ -397,6 +406,8 @@ static void
 detach_device (grub_usb_device_t dev)
 {
   unsigned i;
+  grub_usb_err_t err;
+
   int k;
   if (!dev)
     return;
@@ -417,6 +428,14 @@ detach_device (grub_usb_device_t dev)
 	  if (inter && inter->detach_hook)
 	    inter->detach_hook (dev, i, k);
 	}
+  if (dev->controller.dev->detach_dev) {
+    err = dev->controller.dev->detach_dev (&dev->controller, dev);
+    if (err)
+    {
+	    // XXX
+    }
+  }
+
   grub_usb_devs[dev->addr] = 0;
 }
 

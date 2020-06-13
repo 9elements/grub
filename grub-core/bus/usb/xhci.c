@@ -418,14 +418,6 @@ struct grub_xhci_ir {
 
 #define GRUB_XHCI_N_TD  640
 
-struct grub_xhci_slots {
-  grub_uint8_t              slotid;
-  grub_uint32_t             max_packet; // maximum packet size
-  grub_uint32_t             dev_addr; // as assigned by xHCI
-  grub_usb_device_t         *dev;
-  struct grub_xhci_trb      *enpoint_trbs[32];
-};
-
 struct grub_xhci
 {
   /* xhci registers */
@@ -449,12 +441,12 @@ struct grub_xhci
 
   grub_uint32_t reset;		/* bits 1-15 are flags if port was reset from connected time or not */
   struct grub_xhci *next;
-
-  struct grub_xhci_slots *slots_meta;
 };
 
 struct grub_xhci_priv {
-
+  grub_uint8_t              slotid;
+  grub_uint32_t             max_packet; // maximum packet size
+  struct grub_xhci_trb      *enpoint_trbs[32];
 };
 
 struct grub_xhci_port {
@@ -1095,7 +1087,6 @@ grub_xhci_init_device (volatile void *regs)
               , pagesize<<12);
     goto fail;
   }
-  x->slots_meta = grub_zalloc(sizeof(x->slots_meta[0]) * (x->slots + 1));
   x->devs = grub_memalign_dma32(64, sizeof(*x->devs) * (x->slots + 1));
   x->eseg = grub_memalign_dma32(64, sizeof(*x->eseg));
   x->cmds = grub_memalign_dma32(GRUB_XHCI_RING_SIZE, sizeof(*x->cmds));
@@ -1105,7 +1096,7 @@ grub_xhci_init_device (volatile void *regs)
   grub_dprintf ("xhci", "XHCI cmds %p\n", x->cmds);
   grub_dprintf ("xhci", "XHCI evts %p\n", x->evts);
 
-  if (!x->slots_meta || !x->devs || !x->cmds || !x->evts || !x->eseg) {
+  if (!x->devs || !x->cmds || !x->evts || !x->eseg) {
       goto fail;
   }
   grub_memset(x->devs, 0, sizeof(*x->devs) * (x->slots + 1));
@@ -1138,8 +1129,6 @@ fail:
         grub_dma_free ((void *) x->cmds);
       if (x->evts)
         grub_dma_free ((void *) x->evts);
-      if (x->slots_meta)
-        grub_free (x->slots_meta);
     }
   grub_free (x);
 
@@ -1245,15 +1234,18 @@ grub_xhci_update_max_paket_size (struct grub_xhci *x,
 static grub_usb_err_t
 grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
 			  grub_usb_transfer_t transfer,
-        struct grub_xhci_slots **out)
+        struct grub_xhci_priv *priv)
 {
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
   grub_uint32_t epid;
-  struct grub_xhci_slots *slots = NULL;
   volatile struct grub_xhci_ring     *reqs;
   grub_usb_err_t err;
 
   xhci_check_status(x);
+
+  if (!dev || !transfer || !transfer->dev || !priv) {
+    return GRUB_USB_ERR_INTERNAL;
+  }
 
   if (transfer->endpoint == 0) {
     epid = 1;
@@ -1264,16 +1256,7 @@ grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
   grub_dprintf("xhci", "%s: epid %d, dev %d\n", __func__,
             epid, transfer->dev->addr);
 
-  // Lookup metadata set on first device contact
-  for (int i = 0; i < x->slots; i++) {
-    if (x->slots_meta[i].slotid > 0 && x->slots_meta[i].dev == transfer->dev) {
-      slots = &x->slots_meta[i];
-      break;
-    }
-  }
-  if (slots && slots->enpoint_trbs[epid]) {
-    *out = slots;
-    grub_dprintf("xhci", "%s: setup already done\n", __func__);
+  if (priv->slotid > 0 && priv->enpoint_trbs[epid] != NULL) {
     return GRUB_USB_ERR_NONE;
   }
 
@@ -1313,7 +1296,7 @@ grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
             );
   grub_dprintf("xhci", "%s: ring %p, epid %d, max %d\n", __func__,
             reqs, epid, transfer->max);
-  if (epid == 1 || slots == NULL) {
+  if (epid == 1 || priv->slotid == 0) {
     // Enable slot.
     int slotid = xhci_cmd_enable_slot(x);
     if (slotid < 0) {
@@ -1352,26 +1335,21 @@ grub_xhci_prepare_endpoint (grub_usb_controller_t dev,
         grub_dma_free(in);
         return GRUB_USB_ERR_BADDEVICE;
     }
-    x->slots_meta[slotid].enpoint_trbs[epid] = reqs;
-    x->slots_meta[slotid].slotid = slotid;
-    x->slots_meta[slotid].dev = transfer->dev;
-    x->slots_meta[slotid].dev_addr = 0;     //new->dev_addr = 0; FIXME
-    x->slots_meta[slotid].max_packet = 0;
-    slots = &x->slots_meta[slotid];
+    priv->enpoint_trbs[epid] = reqs;
+    priv->slotid = slotid;
+    priv->max_packet = 0;
 
-    *out = &x->slots_meta[slotid];
   }
   if (epid != 1) {
       // Send configure command.
-      int cc = xhci_cmd_configure_endpoint(x, slots->slotid, in);
+      int cc = xhci_cmd_configure_endpoint(x, priv->slotid, in);
       if (cc != CC_SUCCESS) {
           grub_dprintf("xhci", "%s: configure endpoint: failed (cc %d)\n", __func__, cc);
           grub_dma_free(in);
 
           return GRUB_USB_ERR_BADDEVICE;
       }
-    x->slots_meta[slots->slotid].enpoint_trbs[epid] = reqs;
-    *out = &x->slots_meta[slots->slotid];
+    priv->enpoint_trbs[epid] = reqs;
   }
 
   grub_dprintf("xhci", "%s:done\n", __func__);
@@ -1499,9 +1477,12 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   grub_uint32_t epid;
   grub_usb_err_t err;
   int rc;
-  struct grub_xhci_slots *slots = NULL;
+  struct grub_xhci_priv *priv;
 
    xhci_check_status(x);
+
+  if (!dev || !transfer || !transfer->dev || !transfer->dev->xhci_priv)
+    return GRUB_USB_ERR_INTERNAL;
 
   if (transfer->endpoint == 0) {
       epid = 1;
@@ -1510,19 +1491,17 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
       epid += (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
   }
 
-  err = grub_xhci_prepare_endpoint(dev, transfer, &slots);
+  priv = transfer->dev->xhci_priv;
+  err = grub_xhci_prepare_endpoint(dev, transfer, priv);
   if (err != GRUB_USB_ERR_NONE)
     return err;
 
-  if (!slots || !slots->enpoint_trbs[epid])
-    return GRUB_USB_ERR_INTERNAL;
-
   // Update the max packet size once descdev.maxsize0 is valid
   if (epid == 1 &&
-    (slots->max_packet == 0) &&
+    (priv->max_packet == 0) &&
     (transfer->dev->descdev.maxsize0 > 0)) {
-    slots->max_packet = transfer->dev->descdev.maxsize0;
-    err = grub_xhci_update_max_paket_size(x, transfer, slots->slotid);
+    priv->max_packet = transfer->dev->descdev.maxsize0;
+    err = grub_xhci_update_max_paket_size(x, transfer, priv->slotid);
     if (err != GRUB_USB_ERR_NONE) {
       grub_dprintf("xhci", "%s: Updating max paket size failed\n", __func__);
       return err;
@@ -1531,7 +1510,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   if (epid == 1 &&
       transfer->dev->descdev.class == 9 &&
       transfer->dev->nports > 0) {
-    err = grub_xhci_update_hub_portcount(x, transfer, slots->slotid);
+    err = grub_xhci_update_hub_portcount(x, transfer, priv->slotid);
     if (err != GRUB_USB_ERR_NONE) {
       grub_dprintf("xhci", "%s: Updating max paket size failed\n", __func__);
       return err;
@@ -1543,8 +1522,8 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
     return GRUB_USB_ERR_INTERNAL;
 
   cdata->epid = epid;
-  cdata->reqs = slots->enpoint_trbs[epid];
-  cdata->slotid = slots->slotid;
+  cdata->reqs = priv->enpoint_trbs[epid];
+  cdata->slotid = priv->slotid;
 
   transfer->controller_data = cdata;
 
@@ -1891,17 +1870,6 @@ static void
 grub_xhci_halt(struct grub_xhci *x)
 {
   grub_uint32_t reg;
-  int i, j;
-
-  for (i = 0; i < x->slots; i++) {
-    for (j = 0; j < 32; j++) {
-      if (x->slots_meta[i].enpoint_trbs[j] != NULL) {
-        xhci_cmd_stop_endpoint(x, x->slots_meta[i].slotid, j, 1);
-        grub_dma_free(x->slots_meta[i].enpoint_trbs[j]);
-        x->slots_meta[i].enpoint_trbs[j] = NULL;
-      }
-    }
-  }
 
   // Halt the command ring
   reg = grub_xhci_read32(&x->op->crcr_low);

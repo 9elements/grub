@@ -1462,13 +1462,26 @@ grub_xhci_transfer_next_is_normal(grub_usb_transfer_t transfer,
   return grub_xhci_transfer_is_normal(transfer, idx + 1);
 }
 
+static grub_uint8_t grub_xhci_epid_from_transfer(grub_usb_transfer_t transfer)
+{
+  grub_uint8_t epid;
+
+  if (transfer->endpoint == 0) {
+      epid = 1;
+  } else {
+    epid = (transfer->endpoint & 0x0f) * 2;
+    epid += (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
+  }
+  return epid;
+}
+
 static grub_usb_err_t
 grub_xhci_setup_transfer (grub_usb_controller_t dev,
 			  grub_usb_transfer_t transfer)
 {
   struct grub_xhci_transfer_controller_data *cdata;
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
-  grub_uint32_t epid;
+  grub_uint8_t epid;
   grub_usb_err_t err;
   struct grub_xhci_ring *reqs;
   int rc;
@@ -1478,13 +1491,6 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
 
   if (!dev || !transfer || !transfer->dev || !transfer->dev->xhci_priv)
     return GRUB_USB_ERR_INTERNAL;
-
-  if (transfer->endpoint == 0) {
-      epid = 1;
-  } else {
-      epid = (transfer->endpoint & 0x0f) * 2;
-      epid += (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
-  }
 
   priv = transfer->dev->xhci_priv;
   err = grub_xhci_prepare_endpoint(x, transfer->dev,
@@ -1496,6 +1502,8 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
 
   if (err != GRUB_USB_ERR_NONE)
     return err;
+
+  epid = grub_xhci_epid_from_transfer(transfer);
 
   // Update the max packet size once descdev.maxsize0 is valid
   if (epid == 1 &&
@@ -1631,7 +1639,7 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
 {
   grub_uint32_t status;
   grub_uint32_t remaining;
-  grub_uint32_t epid;
+  grub_uint8_t epid;
   struct grub_xhci_ring *reqs;
 
   grub_usb_err_t err;
@@ -1650,12 +1658,7 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
   xhci_check_status(x);
   xhci_process_events(x);
 
-  if (transfer->endpoint == 0) {
-      epid = 1;
-  } else {
-      epid = (transfer->endpoint & 0x0f) * 2;
-      epid += (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
-  }
+  epid = grub_xhci_epid_from_transfer(transfer);
 
   reqs = priv->enpoint_trbs[epid];
 
@@ -1701,7 +1704,7 @@ grub_xhci_cancel_transfer (grub_usb_controller_t dev,
 			grub_usb_transfer_t transfer)
 {
   grub_uint32_t reg;
-  grub_uint32_t epid;
+  grub_uint8_t epid;
   struct grub_xhci_ring *reqs;
 
   int rc;
@@ -1716,12 +1719,7 @@ grub_xhci_cancel_transfer (grub_usb_controller_t dev,
     transfer->controller_data;
   struct grub_xhci_priv *priv = transfer->dev->xhci_priv;
 
-  if (transfer->endpoint == 0) {
-      epid = 1;
-  } else {
-      epid = (transfer->endpoint & 0x0f) * 2;
-      epid += (transfer->dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
-  }
+  epid = grub_xhci_epid_from_transfer(transfer);
 
   reqs = priv->enpoint_trbs[epid];
 

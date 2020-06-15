@@ -1722,16 +1722,23 @@ grub_xhci_cancel_transfer (grub_usb_controller_t dev,
   if (rc < 0) {
     return GRUB_USB_ERR_TIMEOUT;
   }
-  rc = xhci_cmd_set_dequeue_pointer(x, priv->slotid, epid, ((grub_uint64_t)&reqs->ring[0]) | 1);
-  if (rc < 0) {
-    return GRUB_USB_ERR_TIMEOUT;
-  }
 
-  xhci_doorbell(x, priv->slotid, epid);
-  rc = xhci_event_wait(x, reqs, 1000);
+  /* Reset state */
+  grub_xhci_write32(&reqs->nidx, 0);
+  grub_xhci_write32(&reqs->eidx, 0);
+  grub_xhci_write32(&reqs->cs, 1);
+
+  rc = xhci_cmd_set_dequeue_pointer(x, priv->slotid, epid, ((grub_uint64_t)&reqs->ring[0]) | 1 );
   if (rc < 0) {
     return GRUB_USB_ERR_TIMEOUT;
   }
+  grub_xhci_write32(&reqs->evt.ptr_low, 0);
+  grub_xhci_write32(&reqs->evt.ptr_high, 0);
+  grub_xhci_write32(&reqs->evt.control, 0);
+  grub_xhci_write32(&reqs->evt.status, 0);
+
+  /* Restart ring buffer processing */
+  xhci_doorbell(x, priv->slotid, epid);
 
   grub_free (cdata);
 

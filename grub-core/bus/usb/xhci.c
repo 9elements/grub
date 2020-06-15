@@ -723,7 +723,7 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
   // two on the next call to this function
   if (xhci_ring_almost_full(ring)) {
     xhci_doorbell(x, slotid, epid);
-    int rc = xhci_event_wait(x, x->cmds, 1000);
+    int rc = xhci_event_wait(x, ring, 1000);
     grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
     return rc;
   }

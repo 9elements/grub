@@ -714,14 +714,16 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
                                     volatile struct grub_xhci_ring *ring,
                                     void *data, grub_uint32_t xferlen, grub_uint32_t flags)
 {
+  grub_uint8_t submit = 0;
   if (xhci_ring_almost_full(ring)) {
     grub_dprintf("xhci", "%s: almost full e %d n %d\n", __func__, ring->eidx, ring->nidx);
     flags |= TRB_TR_IOC;
+    submit = 1;
   }
   xhci_trb_queue(ring, data, xferlen, flags);
   // Submit if less than 1 free slot is remaining, we might need
   // two on the next call to this function
-  if (xhci_ring_almost_full(ring)) {
+  if (submit) {
     xhci_doorbell(x, slotid, epid);
     int rc = xhci_event_wait(x, ring, 1000);
     grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);

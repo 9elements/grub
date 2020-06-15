@@ -1846,12 +1846,6 @@ grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
   else
     *changed = 0;
 
-  grub_dprintf("xhci", "port #%d: 0x%08x,%s%s%s pls %d, speed %d\n",
-          port, portsc,
-          (portsc & GRUB_XHCI_PORTSC_PP)  ? " powered," : "",
-          (portsc & GRUB_XHCI_PORTSC_PED) ? " enabled," : "",
-          *changed ? "changed, " : "",
-          pls, speed);
 
   if (!(portsc & GRUB_XHCI_PORTSC_CCS))
     {				/* We should reset related "reset" flag in not connected state */

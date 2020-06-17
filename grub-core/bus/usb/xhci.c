@@ -503,8 +503,9 @@ grub_xhci_port_resbits (struct grub_xhci *x, grub_uint32_t port,
 			grub_uint32_t bits)
 {
   grub_xhci_write32(&x->pr[port].portsc,
-		grub_xhci_read32(&x->pr[port].portsc) &
-		~(bits));
+      (grub_xhci_read32(&x->pr[port].portsc) &
+       ~(GRUB_XHCI_PORTSC_PED|GRUB_XHCI_PORTSC_PR|GRUB_XHCI_PORTSC_CSC))
+      & ~(bits));
 }
 
 static inline void
@@ -512,8 +513,9 @@ grub_xhci_port_setbits (struct grub_xhci *x, grub_uint32_t port,
 			grub_uint32_t bits)
 {
   grub_xhci_write32(&x->pr[port].portsc,
-		grub_xhci_read32(&x->pr[port].portsc) |
-		  (bits));
+      (grub_xhci_read32(&x->pr[port].portsc) &
+       ~(GRUB_XHCI_PORTSC_PED|GRUB_XHCI_PORTSC_PR|GRUB_XHCI_PORTSC_CSC))
+      | (bits));
 }
 
 // Just for debugging
@@ -540,7 +542,6 @@ static void xhci_check_status(struct grub_xhci *x)
 // Signal the hardware to process events on a TRB ring
 static void xhci_doorbell(struct grub_xhci *x, grub_uint32_t slotid, grub_uint32_t value)
 {
-  xhci_check_status(x);
     grub_dprintf("xhci", "%s: slotid %d, epid %d\n", __func__, slotid, value);
     grub_xhci_write32(&x->db[slotid].doorbell, value);
 }
@@ -579,15 +580,8 @@ static void xhci_process_events(struct grub_xhci *x)
         }
         case ER_PORT_STATUS_CHANGE:
         {
-            grub_uint32_t port = ((etrb->ptr_low >> 24) & 0xff) - 1;
-            // Read status, and clear port status change bits
-            grub_uint32_t portsc = grub_xhci_read32(&x->pr[port].portsc);
-            grub_uint32_t pclear = (((portsc & ~(GRUB_XHCI_PORTSC_PED|GRUB_XHCI_PORTSC_PR))
-                           & ~(XHCI_PORTSC_PLS_MASK<<XHCI_PORTSC_PLS_SHIFT))
-                          | (1<<XHCI_PORTSC_PLS_SHIFT));
-            grub_xhci_write32(&x->pr[port].portsc, pclear);
-
-            //xhci_print_port_state(3, __func__, port, portsc);
+            grub_dprintf("xhci", "%s: portstatus changed (cc %d)\n",
+                __func__, evt_cc);
             break;
         }
         default:
@@ -653,14 +647,12 @@ static int xhci_event_wait(struct grub_xhci *x,
     grub_uint32_t end = grub_get_time_ms () + timeout;
 
     for (;;) {
-        xhci_check_status(x);
         xhci_process_events(x);
         if (!xhci_ring_busy(ring)) {
             grub_uint32_t status = ring->evt.status;
             return (status >> 24) & 0xff;
         }
         if (grub_get_time_ms () > end) {
-            xhci_check_status(x);
             grub_dprintf("xhci", "%s: Timeout waiting for event\n", __func__);
             return -1;
         }
@@ -961,7 +953,6 @@ grub_xhci_reset (struct grub_xhci *x)
       x->devs[0].ptr_low = (grub_uint32_t)spba;
       x->devs[0].ptr_high = 0;
   }
-  xhci_check_status(x);
 
   grub_dprintf ("xhci", "XHCI OP COMMAND: %08x\n",
 		grub_xhci_read32 (&x->op->usbcmd));
@@ -987,8 +978,6 @@ grub_xhci_reset (struct grub_xhci *x)
 		grub_xhci_read32 (&x->ir->erdp_low));
   grub_dprintf ("xhci", "XHCI IR ERSTBA: %08x\n",
 		grub_xhci_read32 (&x->ir->erstba_low));
-
-  xhci_check_status(x);
 
   return GRUB_USB_ERR_NONE;
 }
@@ -1173,7 +1162,6 @@ grub_xhci_update_hub_portcount (struct grub_xhci *x,
   grub_dprintf("xhci", "%s: updating hub config to %d ports\n", __func__,
      transfer->dev->nports);
 
-  xhci_check_status(x);
 
   // Allocate input context and initialize endpoint info.
   struct grub_xhci_inctx *in = grub_xhci_alloc_inctx(x, epid, transfer->dev);
@@ -1210,7 +1198,6 @@ grub_xhci_update_max_paket_size (struct grub_xhci *x,
   grub_dprintf("xhci", "%s: updating max packet size to 0x%x\n", __func__,
     transfer->dev->descdev.maxsize0);
 
-  xhci_check_status(x);
 
   // Allocate input context and initialize endpoint info.
   struct grub_xhci_inctx *in = grub_xhci_alloc_inctx(x, epid, transfer->dev);
@@ -1249,7 +1236,6 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
     return GRUB_USB_ERR_INTERNAL;
   }
 
-  xhci_check_status(x);
 
   if (endpoint == 0) {
     epid = 1;
@@ -1483,7 +1469,6 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   int rc;
   struct grub_xhci_priv *priv;
 
-   xhci_check_status(x);
 
   if (!dev || !transfer || !transfer->dev || !transfer->dev->xhci_priv)
     return GRUB_USB_ERR_INTERNAL;
@@ -1653,7 +1638,6 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
   volatile struct grub_xhci_transfer_controller_data *cdata =
     transfer->controller_data;
 
-  xhci_check_status(x);
   xhci_process_events(x);
 
   epid = grub_xhci_epid_from_transfer(transfer);
@@ -1774,7 +1758,6 @@ grub_xhci_portstatus (grub_usb_controller_t dev,
           (portsc & GRUB_XHCI_PORTSC_PP)  ? " powered," : "",
           (portsc & GRUB_XHCI_PORTSC_PED) ? " enabled," : "",
           pls, enable);
-  xhci_check_status(x);
 
   if ((enable && (portsc & GRUB_XHCI_PORTSC_PED)) ||
       (!enable && !(portsc & GRUB_XHCI_PORTSC_PED)))
@@ -1782,7 +1765,7 @@ grub_xhci_portstatus (grub_usb_controller_t dev,
 
   if (!enable) {
     // Disable port
-    grub_xhci_write32(&x->pr[port].portsc, portsc | GRUB_XHCI_PORTSC_PED);
+    grub_xhci_port_setbits(x, port, GRUB_XHCI_PORTSC_PED);
     return GRUB_USB_ERR_NONE;
   }
 
@@ -1821,7 +1804,6 @@ grub_xhci_portstatus (grub_usb_controller_t dev,
           return GRUB_USB_ERR_TIMEOUT;
       }
   }
-  xhci_check_status(x);
 
   return GRUB_USB_ERR_NONE;
 }
@@ -1848,7 +1830,7 @@ grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
 
 
   if (!(portsc & GRUB_XHCI_PORTSC_CCS))
-    {				/* We should reset related "reset" flag in not connected state */
+    {
       x->reset &= ~(1 << port);
       return GRUB_USB_SPEED_NONE;
     }
@@ -1985,9 +1967,6 @@ grub_xhci_fini_hw (int noreturn __attribute__ ((unused)))
     {
       /* Check if xHCI is halted and halt it if not */
       grub_xhci_halt (x);
-
-      /* Reset xHCI */
-      return grub_xhci_reset (x);
     }
 
   return GRUB_ERR_NONE;

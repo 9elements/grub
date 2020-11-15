@@ -82,8 +82,14 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
   if (i == GRUB_USBHUB_MAX_DEVICES)
     {
       grub_error (GRUB_ERR_IO, "can't assign address to USB device");
-      for (i = 0; i < 8; i++)
-        grub_free (dev->config[i].descconf);
+      for (i = 0; i < 8; i++) {
+	int currif;
+
+	for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
+	  grub_free (dev->config[i].interf[currif].descendp);
+
+	grub_free (dev->config[i].descconf);
+      }
       grub_free (dev);
       return NULL;
     }
@@ -96,8 +102,14 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
 			      i, 0, 0, NULL);
   if (err)
     {
-      for (i = 0; i < 8; i++)
-        grub_free (dev->config[i].descconf);
+      for (i = 0; i < 8; i++) {
+	int currif;
+
+	for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
+	  grub_free (dev->config[i].interf[currif].descendp);
+
+	grub_free (dev->config[i].descconf);
+      }
       grub_free (dev);
       return NULL;
     }
@@ -176,7 +188,7 @@ grub_usb_add_hub (grub_usb_device_t dev)
        i++)
     {
       struct grub_usb_desc_endp *endp = NULL;
-      endp = &dev->config[0].interf[0].descendp[i];
+      endp = dev->config[0].interf[0].descendp[i];
 
       if ((endp->endp_addr & 128) && grub_usb_get_ep_type(endp)
 	  == GRUB_USB_EP_INTERRUPT)

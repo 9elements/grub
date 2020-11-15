@@ -334,6 +334,10 @@ grub_usb_cancel_transfer (grub_usb_transfer_t trans);
 void
 grub_ehci_init_device (volatile void *regs);
 void
+grub_xhci_init_device (volatile void *regs);
+void
 grub_ehci_pci_scan (void);
+void
+grub_xhci_pci_scan (void);
 
 #endif /* GRUB_USB_H */

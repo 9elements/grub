@@ -233,6 +233,11 @@ struct grub_usb_device
   int split_hubport;
 
   int split_hubaddr;
+
+  /* xHCI specific information */
+  int root_port;
+  grub_uint32_t route;
+  void *xhci_priv;
 };
 
 

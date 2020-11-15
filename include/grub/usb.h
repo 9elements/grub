@@ -149,7 +149,7 @@ struct grub_usb_interface
 {
   struct grub_usb_desc_if *descif;
 
-  struct grub_usb_desc_endp *descendp;
+  struct grub_usb_desc_endp **descendp;
 
   /* A driver is handling this interface. Do we need to support multiple drivers
      for single interface?

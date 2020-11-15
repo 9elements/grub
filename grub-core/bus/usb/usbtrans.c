@@ -130,6 +130,8 @@ grub_usb_control_msg (grub_usb_device_t dev,
   /* Determine the maximum packet size.  */
   if (dev->descdev.maxsize0)
     max = dev->descdev.maxsize0;
+  else if (dev->speed == GRUB_USB_SPEED_SUPER)
+    max = 512;
   else
     max = 64;
 

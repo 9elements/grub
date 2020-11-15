@@ -47,7 +47,8 @@ typedef enum
     GRUB_USB_SPEED_NONE,
     GRUB_USB_SPEED_LOW,
     GRUB_USB_SPEED_FULL,
-    GRUB_USB_SPEED_HIGH
+    GRUB_USB_SPEED_HIGH,
+    GRUB_USB_SPEED_SUPER
   } grub_usb_speed_t;
 
 typedef int (*grub_usb_iterate_hook_t) (grub_usb_device_t dev, void *data);

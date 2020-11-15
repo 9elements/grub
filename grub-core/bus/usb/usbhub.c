@@ -49,7 +49,9 @@ static grub_usb_controller_dev_t grub_usb_list;
 static grub_usb_device_t
 grub_usb_hub_add_dev (grub_usb_controller_t controller,
                       grub_usb_speed_t speed,
-                      int split_hubport, int split_hubaddr)
+                      int split_hubport, int split_hubaddr,
+		      int root_portno,
+		      grub_uint32_t route)
 {
   grub_usb_device_t dev;
   int i;
@@ -65,6 +67,8 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
   dev->speed = speed;
   dev->split_hubport = split_hubport;
   dev->split_hubaddr = split_hubaddr;
+  dev->root_port = root_portno;
+  dev->route = route;
 
   if (controller->dev->attach_dev) {
     err = controller->dev->attach_dev (controller, dev);
@@ -245,7 +249,7 @@ attach_root_port (struct grub_usb_hub *hub, int portno,
      and full/low speed device connected to OHCI/UHCI needs not
      transaction translation - e.g. hubport and hubaddr should be
      always none (zero) for any device connected to any root hub. */
-  dev = grub_usb_hub_add_dev (hub->controller, speed, 0, 0);
+  dev = grub_usb_hub_add_dev (hub->controller, speed, 0, 0, portno, 0);
   hub->controller->dev->pending_reset = 0;
   npending--;
   if (! dev)
@@ -673,10 +677,12 @@ poll_nonroot_hub (grub_usb_device_t dev)
 		    split_hubport = dev->split_hubport;
 		    split_hubaddr = dev->split_hubaddr;
 		  }
-		
+
+
 	      /* Add the device and assign a device address to it.  */
 	      next_dev = grub_usb_hub_add_dev (&dev->controller, speed,
-					       split_hubport, split_hubaddr);
+					       split_hubport, split_hubaddr, dev->root_port,
+					       dev->route << 4 | (i & 0xf));
 	      if (dev->controller.dev->pending_reset)
 		{
 		  dev->controller.dev->pending_reset = 0;

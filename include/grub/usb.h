@@ -122,6 +122,10 @@ struct grub_usb_controller_dev
 
   grub_usb_speed_t (*detect_dev) (grub_usb_controller_t dev, int port, int *changed);
 
+  grub_usb_err_t (*attach_dev) (grub_usb_controller_t ctrl, grub_usb_device_t dev);
+
+  grub_usb_err_t (*detach_dev) (grub_usb_controller_t ctrl, grub_usb_device_t dev);
+
   /* Per controller flag - port reset pending, don't do another reset */
   grub_uint64_t pending_reset;
 

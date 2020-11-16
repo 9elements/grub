@@ -15,6 +15,12 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with GRUB.  If not, see <http://www.gnu.org/licenses/>.
+ * 
+ * Big parts of this software are inspired by seabios XHCI implementation
+ * Released under LGPLv3. Credits to:
+ *
+ * Copyright (C) 2013  Gerd Hoffmann <kraxel@redhat.com>
+ * Copyright (C) 2014  Kevin O'Connor <kevin@koconnor.net>
  */
 
 #include <grub/dl.h>
@@ -360,7 +366,6 @@ struct grub_xhci_rts {
     grub_uint32_t mfindex;
 } GRUB_PACKED;
 
-
 // interrupter registers
 struct grub_xhci_ir {
     grub_uint32_t iman;
@@ -377,6 +382,7 @@ struct grub_xhci_ir {
 
 struct grub_xhci
 {
+  grub_uint8_t shutdown; /* 1 if preparing shutdown of controller */
   /* xhci registers */
   volatile struct grub_xhci_caps *caps;	/* Capability registers */
   volatile struct grub_xhci_op *op;	/* Operational registers */
@@ -476,6 +482,11 @@ grub_xhci_port_setbits (struct grub_xhci *x, grub_uint32_t port,
   grub_xhci_write32(&x->pr[port].portsc,
 		grub_xhci_read32(&x->pr[port].portsc) |
 		  (bits));
+}
+
+static grub_uint8_t xhci_is_halted(struct grub_xhci *x)
+{
+  return !!(grub_xhci_read32(&x->op->usbsts) & 1);
 }
 
 // Just for debugging
@@ -698,14 +709,20 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
 static int xhci_cmd_submit(struct grub_xhci *x, struct grub_xhci_inctx *inctx
                            , grub_uint32_t flags)
 {
-    if (inctx) {
-        struct grub_xhci_slotctx *slot = (void*)&inctx[1 << x->flag64];
-        grub_uint32_t port = ((slot->ctx[1] >> 16) & 0xff) - 1;
-        grub_uint32_t portsc = grub_xhci_read32(&x->pr[port].portsc);
-        if (!(portsc & GRUB_XHCI_PORTSC_CCS)) {
+  /* Don't submit if halted, it will fail */
+  if (xhci_is_halted(x))
+    return -1;
+
+  if (inctx)
+    {
+      struct grub_xhci_slotctx *slot = (void*)&inctx[1 << x->flag64];
+      grub_uint32_t port = ((slot->ctx[1] >> 16) & 0xff) - 1;
+      grub_uint32_t portsc = grub_xhci_read32(&x->pr[port].portsc);
+      if (!(portsc & GRUB_XHCI_PORTSC_CCS))
+        {
           grub_dprintf("xhci", "%s: root port %d no longer connected\n",
             __func__, port);
-            return -1;
+          return -1;
         }
     }
 
@@ -972,14 +989,14 @@ grub_xhci_init_device (volatile void *regs)
       grub_dprintf("xhci", "XHCI grub_ehci_pci_iter memory allocation failed\n");
       return;
     }
-  x->caps = (struct grub_xhci_caps *) regs;
-  x->op = (struct grub_xhci_op *) (((grub_uint8_t *)regs) +
+  x->caps = (volatile struct grub_xhci_caps *) regs;
+  x->op = (volatile struct grub_xhci_op *) (((grub_uint8_t *)regs) +
       grub_xhci_read8(&x->caps->caplength));
-  x->pr = (struct grub_xhci_pr *) (((grub_uint8_t *)x->op) +
+  x->pr = (volatile struct grub_xhci_pr *) (((grub_uint8_t *)x->op) +
       GRUB_XHCI_PR_OFFSET);
-  x->db = (struct grub_xhci_db *) (((grub_uint8_t *)regs) +
+  x->db = (volatile struct grub_xhci_db *) (((grub_uint8_t *)regs) +
       grub_xhci_read32(&x->caps->dboff));
-  x->ir = (struct grub_xhci_ir *) (((grub_uint8_t *)regs) +
+  x->ir = (volatile struct grub_xhci_ir *) (((grub_uint8_t *)regs) +
 		  grub_xhci_read32(&x->caps->rtsoff) + GRUB_XHCI_IR_OFFSET);
 
   grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: CAPLENGTH: %02x\n",
@@ -1059,11 +1076,12 @@ grub_xhci_init_device (volatile void *regs)
   }
 
   grub_uint32_t pagesize = grub_xhci_read32(&x->op->pagesize);
-  if (PAGE_SIZE != (pagesize<<12)) {
+  if (PAGE_SIZE != (pagesize<<12))
+    {
       grub_dprintf("xhci", "XHCI driver does not support page size code %d\n"
               , pagesize<<12);
-    goto fail;
-  }
+      goto fail;
+    }
 
   x->devs_dma = grub_memalign_dma32(64, sizeof(*x->devs) * (x->slots + 1));
   grub_dprintf ("xhci", "XHCI devs %p\n", x->devs_dma);
@@ -1182,11 +1200,12 @@ grub_xhci_update_hub_portcount (struct grub_xhci *x,
   int cc = xhci_cmd_configure_endpoint(x, slotid, in);
   grub_dma_free(in_dma);
 
-  if (cc != CC_SUCCESS) {
+  if (cc != CC_SUCCESS)
+    {
       grub_dprintf("xhci", "%s: reconf ctl endpoint: failed (cc %d)\n",
               __func__, cc);
-    return GRUB_USB_ERR_BADDEVICE;
-  }
+      return GRUB_USB_ERR_BADDEVICE;
+    }
 
   return GRUB_USB_ERR_NONE;
 }
@@ -1222,11 +1241,12 @@ grub_xhci_update_max_paket_size (struct grub_xhci *x,
   int cc = xhci_cmd_evaluate_context(x, slotid, in);
   grub_dma_free(in_dma);
 
-  if (cc != CC_SUCCESS) {
+  if (cc != CC_SUCCESS)
+    {
       grub_dprintf("xhci", "%s: reconf ctl endpoint: failed (cc %d)\n",
               __func__, cc);
-    return GRUB_USB_ERR_BADDEVICE;
-  }
+      return GRUB_USB_ERR_BADDEVICE;
+    }
 
   return GRUB_USB_ERR_NONE;
 }
@@ -1245,24 +1265,27 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
   struct grub_pci_dma_chunk *slotctx_dma;
   struct grub_pci_dma_chunk *in_dma;
   volatile struct grub_xhci_ring *reqs;
+  volatile struct grub_xhci_slotctx *slotctx;
 
-  if (!x || !priv) {
+  if (!x || !priv)
     return GRUB_USB_ERR_INTERNAL;
-  }
 
   xhci_check_status(x);
 
-  if (endpoint == 0) {
-    epid = 1;
-  } else {
-    epid = (endpoint & 0x0f) * 2;
-    epid += (dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
-  }
+  if (endpoint == 0)
+    {
+      epid = 1;
+    }
+  else
+    {
+      epid = (endpoint & 0x0f) * 2;
+      epid += (dir == GRUB_USB_TRANSFER_TYPE_IN) ? 1 : 0;
+    }
   grub_dprintf("xhci", "%s: epid %d\n", __func__, epid);
 
-  if (priv->slotid > 0 && priv->enpoint_trbs[epid] != NULL) {
+  /* Test if already prepared */
+  if (priv->slotid > 0 && priv->enpoint_trbs[epid] != NULL)
     return GRUB_USB_ERR_NONE;
-  }
 
   /* Allocate DMA buffer as endpoint TRB */
   reqs_dma = grub_memalign_dma32(GRUB_XHCI_RING_SIZE, sizeof(*reqs));
@@ -1315,13 +1338,14 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
     grub_uint32_t size = (sizeof(struct grub_xhci_slotctx) * 32) << x->flag64;
 
     slotctx_dma = grub_memalign_dma32(1024 << x->flag64, size);
-    if (!slotctx_dma) {
-      grub_dprintf("xhci", "%s: grub_memalign_dma32 failed\n", __func__);
+    if (!slotctx_dma)
+      {
+        grub_dprintf("xhci", "%s: grub_memalign_dma32 failed\n", __func__);
 
-      grub_dma_free(in_dma);
-      return GRUB_USB_ERR_INTERNAL;
-    }
-    volatile struct grub_xhci_slotctx *slotctx = grub_dma_get_virt(slotctx_dma);
+        grub_dma_free(in_dma);
+        return GRUB_USB_ERR_INTERNAL;
+      }
+    slotctx = grub_dma_get_virt(slotctx_dma);
 
     grub_dprintf("xhci", "%s: enable slot: got slotid %d\n", __func__, slotid);
     grub_memset((void *)slotctx, 0, size);
@@ -1373,11 +1397,11 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
 static grub_usb_err_t
 grub_xhci_usb_to_grub_err (unsigned char status)
 {
-  if (status != CC_SUCCESS) {
+  if (status != CC_SUCCESS)
     grub_dprintf("xhci", "%s: xfer failed (cc %d)\n", __func__, status);
-  } else {
+  else
     grub_dprintf("xhci", "%s: xfer done   (cc %d)\n", __func__, status);
-  }
+
 
   if (status == CC_BABBLE_DETECTED) {
     return GRUB_USB_ERR_BABBLE;
@@ -1850,6 +1874,20 @@ grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
   grub_uint32_t portsc, pls, speed;
 
+  *changed = 0;
+
+  /* On shutdown advertise all ports as disconnected. This will trigger
+   * a gracefull detatch. */
+  if (x->shutdown)
+  {
+    *changed = 1;
+    return GRUB_USB_SPEED_NONE;
+  }
+
+  /* Don't advertise new devices, connecting will fail if halted */
+  if (xhci_is_halted(x))
+    return GRUB_USB_SPEED_NONE;
+
   portsc = grub_xhci_read32(&x->pr[port].portsc);
   pls = xhci_get_field(portsc, XHCI_PORTSC_PLS);
   speed = xhci_get_field(portsc, XHCI_PORTSC_SPEED);
@@ -1861,8 +1899,6 @@ grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
       /* Reset bit Connect Status Change */
       grub_xhci_port_setbits (x, port, GRUB_XHCI_PORTSC_CSC);
     }
-  else
-    *changed = 0;
 
 
   if (!(portsc & GRUB_XHCI_PORTSC_CCS))
@@ -2002,6 +2038,11 @@ grub_xhci_fini_hw (int noreturn __attribute__ ((unused)))
   /* We should disable all XHCI HW to prevent any DMA access etc. */
   for (x = xhci; x; x = x->next)
     {
+      x->shutdown = 1;
+
+      /* Gracefully detach active devices */
+      grub_usb_poll_devices(0);
+
       /* Check if xHCI is halted and halt it if not */
       grub_xhci_halt (x);
 

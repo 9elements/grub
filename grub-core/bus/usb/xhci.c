@@ -1980,28 +1980,33 @@ grub_xhci_detach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
   if (dev->xhci_priv) {
     priv = dev->xhci_priv;
     // Stop endpoints and free ring buffer
-    for (i = 0; i < 32; i++) {
-      if (priv->enpoint_trbs[i] != NULL) {
-        cc = xhci_cmd_stop_endpoint(x, priv->slotid, i, 1);
-        if (cc != CC_SUCCESS) {
-          grub_dprintf("xhci", "Failed to disable EP%d on slot %d\n", i, priv->slotid);
-        }
-        grub_dma_free(priv->enpoint_trbs_dma[i]);
-        priv->enpoint_trbs[i] = NULL;
-        priv->enpoint_trbs_dma[i] = NULL;
+    for (i = 0; i < 32; i++)
+      {
+        if (priv->enpoint_trbs[i] != NULL)
+          {
+            cc = xhci_cmd_stop_endpoint(x, priv->slotid, i, 1);
+            if (cc != CC_SUCCESS)
+              grub_dprintf("xhci", "Failed to disable EP%d on slot %d\n", i, priv->slotid);
+
+            grub_dprintf("xhci", "grub_dma_free[%d]\n", i);
+
+            grub_dma_free(priv->enpoint_trbs_dma[i]);
+            priv->enpoint_trbs[i] = NULL;
+            priv->enpoint_trbs_dma[i] = NULL;
+          }
       }
-    }
 
     cc = xhci_cmd_disable_slot(x, priv->slotid);
-    if (cc != CC_SUCCESS) {
-      return GRUB_USB_ERR_INTERNAL;
-    }
+    if (cc != CC_SUCCESS)
+      grub_dprintf("xhci", "Failed to disable slot %d\n", i, priv->slotid);
 
     grub_free(dev->xhci_priv);
   }
 
   dev->xhci_priv = NULL;
 
+  if (cc != CC_SUCCESS)
+    return GRUB_USB_ERR_BADDEVICE;
   return GRUB_USB_ERR_NONE;
 }
 

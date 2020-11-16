@@ -415,6 +415,7 @@ struct grub_xhci_priv {
   grub_uint32_t             max_packet; // maximum packet size
   struct grub_pci_dma_chunk *enpoint_trbs_dma[32];
   struct grub_xhci_trb      *enpoint_trbs[32];
+  struct grub_pci_dma_chunk *slotctx_dma;
 };
 
 struct grub_xhci_port {
@@ -522,6 +523,7 @@ static void xhci_doorbell(struct grub_xhci *x, grub_uint32_t slotid, grub_uint32
 static void xhci_process_events(struct grub_xhci *x)
 {
     volatile struct grub_xhci_ring *evts = x->evts;
+    grub_arch_sync_caches(evts, sizeof(*evts));
 
     for (;;) {
         /* check for event */
@@ -641,18 +643,24 @@ static int xhci_event_wait(struct grub_xhci *x,
 }
 
 // Add a TRB to the given ring
-static void xhci_trb_fill(volatile struct grub_xhci_ring *ring
-                          , void *data, grub_uint32_t xferlen, grub_uint32_t flags)
+static void xhci_trb_fill( volatile struct grub_xhci_ring *ring,
+                          void *data, grub_uint32_t xferlen, grub_uint32_t flags)
 {
-    volatile struct grub_xhci_trb *dst = &ring->ring[ring->nidx];
-    if (flags & TRB_TR_IDT) {
-        grub_memcpy(&dst->ptr_low, data, xferlen & 0x1ffff);
-    } else {
-        dst->ptr_low = (grub_uint32_t)data;
-        dst->ptr_high = 0;
+  volatile struct grub_xhci_trb *dst = &ring->ring[ring->nidx];
+  if (flags & TRB_TR_IDT)
+    {
+      grub_memcpy(&dst->ptr_low, data, xferlen & 0x1ffff);
+      grub_arch_sync_dma_caches(&dst->ptr_low, xferlen & 0x1ffff);
     }
-    dst->status = xferlen;
-    dst->control = flags | (ring->cs ? TRB_C : 0);
+    else
+    {
+      dst->ptr_low = (grub_uint32_t)data;
+      dst->ptr_high = 0;
+    }
+  dst->status = xferlen;
+  dst->control = flags | (ring->cs ? TRB_C : 0);
+
+  grub_arch_sync_dma_caches(dst, sizeof(ring->ring[0]));
 }
 
 // Queue a TRB onto a ring, wrapping ring as needed
@@ -814,9 +822,9 @@ grub_xhci_alloc_inctx(struct grub_xhci *x, int maxepid,
 {
   int size = (sizeof(struct grub_xhci_inctx) * 33) << x->flag64;
   struct grub_pci_dma_chunk *dma = grub_memalign_dma32(2048 << x->flag64, size);
-  if (!dma) {
+  if (!dma)
       return NULL;
-  }
+
   volatile struct grub_xhci_inctx *in = grub_dma_get_virt(dma);
   grub_memset(in, 0, size);
 
@@ -912,13 +920,17 @@ grub_xhci_reset (struct grub_xhci *x)
   grub_xhci_write32(&x->op->config, x->slots);
   grub_xhci_write32(&x->op->dcbaap_low, grub_dma_get_phys(x->devs_dma));
   grub_xhci_write32(&x->op->dcbaap_high, 0);
-  grub_xhci_write32(&x->op->crcr_low, (grub_uint32_t)x->cmds | 1);
+  grub_xhci_write32(&x->op->crcr_low, grub_dma_get_phys(x->cmds_dma)| 1);
   grub_xhci_write32(&x->op->crcr_high, 0);
   x->cmds->cs = 1;
 
-  x->eseg->ptr_low = (grub_uint32_t)x->evts;
+  grub_arch_sync_dma_caches(x->cmds, sizeof(*x->cmds));
+
+  x->eseg->ptr_low = grub_dma_get_phys(x->evts_dma);
   x->eseg->ptr_high = 0;
   x->eseg->size = GRUB_XHCI_RING_ITEMS;
+
+  grub_arch_sync_dma_caches(x->eseg, sizeof(*x->eseg));
 
   grub_xhci_write32(&x->ir->erstsz, 1);
   grub_xhci_write32(&x->ir->erdp_low, grub_dma_get_phys(x->evts_dma));
@@ -926,6 +938,8 @@ grub_xhci_reset (struct grub_xhci *x)
   grub_xhci_write32(&x->ir->erstba_low, grub_dma_get_phys(x->eseg_dma));
   grub_xhci_write32(&x->ir->erstba_high, 0);
   x->evts->cs = 1;
+
+  grub_arch_sync_dma_caches(x->evts, sizeof(*x->eseg));
 
   reg = grub_xhci_read32(&x->caps->hcsparams2);
   grub_uint32_t spb = (reg >> 21 & 0x1f) << 5 | reg >> 27;
@@ -1262,7 +1276,6 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
 {
   grub_uint32_t epid;
   struct grub_pci_dma_chunk *reqs_dma;
-  struct grub_pci_dma_chunk *slotctx_dma;
   struct grub_pci_dma_chunk *in_dma;
   volatile struct grub_xhci_ring *reqs;
   volatile struct grub_xhci_slotctx *slotctx;
@@ -1337,19 +1350,20 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
 
     grub_uint32_t size = (sizeof(struct grub_xhci_slotctx) * 32) << x->flag64;
 
-    slotctx_dma = grub_memalign_dma32(1024 << x->flag64, size);
-    if (!slotctx_dma)
+    /* Allocate memory for the device specific slot context */
+    priv->slotctx_dma = grub_memalign_dma32(1024 << x->flag64, size);
+    if (!priv->slotctx_dma)
       {
         grub_dprintf("xhci", "%s: grub_memalign_dma32 failed\n", __func__);
 
         grub_dma_free(in_dma);
         return GRUB_USB_ERR_INTERNAL;
       }
-    slotctx = grub_dma_get_virt(slotctx_dma);
+    slotctx = grub_dma_get_virt(priv->slotctx_dma);
 
     grub_dprintf("xhci", "%s: enable slot: got slotid %d\n", __func__, slotid);
     grub_memset((void *)slotctx, 0, size);
-    x->devs[slotid].ptr_low = grub_dma_get_phys(slotctx_dma);
+    x->devs[slotid].ptr_low = grub_dma_get_phys(priv->slotctx_dma);
     x->devs[slotid].ptr_high = 0;
 
     grub_arch_sync_dma_caches(slotctx, sizeof(*slotctx));
@@ -1364,7 +1378,7 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
         } else {
           x->devs[slotid].ptr_low = 0;
         }
-        grub_dma_free(slotctx_dma);
+        grub_dma_free(priv->slotctx_dma);
         grub_dma_free(in_dma);
         return GRUB_USB_ERR_BADDEVICE;
     }
@@ -1380,8 +1394,6 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
       if (cc != CC_SUCCESS) {
           grub_dprintf("xhci", "%s: configure endpoint: failed (cc %d)\n", __func__, cc);
           grub_dma_free(in_dma);
-
-
           return GRUB_USB_ERR_BADDEVICE;
       }
     priv->enpoint_trbs[epid] = reqs;
@@ -1997,8 +2009,15 @@ grub_xhci_detach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
       }
 
     cc = xhci_cmd_disable_slot(x, priv->slotid);
-    if (cc != CC_SUCCESS)
-      grub_dprintf("xhci", "Failed to disable slot %d\n", i, priv->slotid);
+    if (cc == CC_SUCCESS)
+      {
+        if (priv->slotctx_dma)
+          grub_dma_free(priv->slotctx_dma);
+        x->devs[priv->slotid].ptr_low = 0;
+        x->devs[priv->slotid].ptr_high = 0;
+      }
+      else
+        grub_dprintf("xhci", "Failed to disable slot %d\n", priv->slotid);
 
     grub_free(dev->xhci_priv);
   }
@@ -2021,16 +2040,16 @@ grub_xhci_halt(struct grub_xhci *x)
 
   int rc = xhci_event_wait(x, x->cmds, 100);
   grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
-  if (rc < 0) {
+  if (rc < 0)
     return;
-  }
 
   // Stop the controller
   reg = grub_xhci_read32(&x->op->usbcmd);
-  if (reg & GRUB_XHCI_CMD_RS) {
-    reg &= ~GRUB_XHCI_CMD_RS;
-    grub_xhci_write32(&x->op->usbcmd, reg);
-  }
+  if (reg & GRUB_XHCI_CMD_RS)
+    {
+      reg &= ~GRUB_XHCI_CMD_RS;
+      grub_xhci_write32(&x->op->usbcmd, reg);
+    }
 
   return;
 }

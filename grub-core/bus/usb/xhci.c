@@ -738,15 +738,17 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
 
 // Submit a command to the xhci controller ring
 static int xhci_cmd_submit(struct grub_xhci *x,
-                          volatile struct grub_xhci_inctx *inctx
+                          struct grub_pci_dma_chunk *inctx_dma
                            , grub_uint32_t flags)
 {
+  volatile struct grub_xhci_inctx *inctx;
   /* Don't submit if halted, it will fail */
   if (xhci_is_halted(x))
     return -1;
-
-  if (inctx)
+  if (inctx_dma)
     {
+      inctx = grub_dma_get_virt(inctx_dma);
+
       struct grub_xhci_slotctx *slot = (void*)&inctx[1 << x->flag64];
       grub_uint32_t port = ((slot->ctx[1] >> 16) & 0xff) - 1;
       grub_uint32_t portsc = grub_xhci_read32(&x->pr[port].portsc);
@@ -756,9 +758,13 @@ static int xhci_cmd_submit(struct grub_xhci *x,
             __func__, port);
           return -1;
         }
+      xhci_trb_queue(x->cmds, grub_dma_get_phys(inctx_dma), 0, flags);
     }
-
-    xhci_trb_queue(x->cmds, inctx, 0, flags);
+    else
+    {
+      xhci_trb_queue(x->cmds, NULL, 0, flags);
+    }
+    
     xhci_doorbell(x, 0, 0);
     int rc = xhci_event_wait(x, x->cmds, 1000);
     grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
@@ -814,28 +820,26 @@ static int xhci_cmd_set_dequeue_pointer(struct grub_xhci *x, grub_uint32_t sloti
 }
 
 static int xhci_cmd_address_device(struct grub_xhci *x, grub_uint32_t slotid
-                                   , volatile struct grub_xhci_inctx *inctx)
+                                   , struct grub_pci_dma_chunk *inctx_dma)
 {
     grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
-    return xhci_cmd_submit(x, inctx
+    return xhci_cmd_submit(x, inctx_dma
                            , (CR_ADDRESS_DEVICE << 10) | (slotid << 24));
 }
 
 static int xhci_cmd_configure_endpoint(struct grub_xhci *x, grub_uint32_t slotid
-                                       , volatile struct grub_xhci_inctx *inctx)
+                                       , struct grub_pci_dma_chunk *inctx_dma)
 {
-    grub_dprintf("xhci", "%s: slotid %d, add 0x%x, del 0x%x\n", __func__,
-            slotid, inctx->add, inctx->del);
-    return xhci_cmd_submit(x, inctx
+    grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
+    return xhci_cmd_submit(x, inctx_dma
                            , (CR_CONFIGURE_ENDPOINT << 10) | (slotid << 24));
 }
 
 static int xhci_cmd_evaluate_context(struct grub_xhci *x, grub_uint32_t slotid
-                                     , volatile struct grub_xhci_inctx *inctx)
+                                     , struct grub_pci_dma_chunk *inctx_dma)
 {
-    grub_dprintf("xhci", "%s: slotid %d, add 0x%x, del 0x%x\n", __func__,
-            slotid, inctx->add, inctx->del);
-    return xhci_cmd_submit(x, inctx
+    grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
+    return xhci_cmd_submit(x, inctx_dma
                            , (CR_EVALUATE_CONTEXT << 10) | (slotid << 24));
 }
 
@@ -1233,9 +1237,9 @@ grub_xhci_update_hub_portcount (struct grub_xhci *x,
   ep->ctx[0]   |= 1 << 26;
   ep->ctx[1]   |= transfer->dev->nports << 24;
 
-  grub_arch_sync_dma_caches(ep, sizeof(*ep));
+  grub_arch_sync_dma_caches(in, sizeof(*in));
 
-  int cc = xhci_cmd_configure_endpoint(x, slotid, in);
+  int cc = xhci_cmd_configure_endpoint(x, slotid, in_dma);
   grub_dma_free(in_dma);
 
   if (cc != CC_SUCCESS)
@@ -1274,9 +1278,9 @@ grub_xhci_update_max_paket_size (struct grub_xhci *x,
   struct grub_xhci_epctx *ep = (void*)&in[(epid+1) << x->flag64];
   ep->ctx[1]   |= transfer->dev->descdev.maxsize0 << 16;
 
-  grub_arch_sync_dma_caches(ep, sizeof(*ep));
+  grub_arch_sync_dma_caches(in, sizeof(*in));
 
-  int cc = xhci_cmd_evaluate_context(x, slotid, in);
+  int cc = xhci_cmd_evaluate_context(x, slotid, in_dma);
   grub_dma_free(in_dma);
 
   if (cc != CC_SUCCESS)
@@ -1394,7 +1398,7 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
     grub_arch_sync_dma_caches(slotctx, sizeof(*slotctx));
 
     // Send set_address command.
-    int cc = xhci_cmd_address_device(x, slotid, in);
+    int cc = xhci_cmd_address_device(x, slotid, in_dma);
     if (cc != CC_SUCCESS)
       {
         grub_dprintf("xhci","%s: address device: failed (cc %d)\n", __func__, cc);
@@ -1416,7 +1420,7 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
   if (epid != 1)
     {
         // Send configure command.
-        int cc = xhci_cmd_configure_endpoint(x, priv->slotid, in);
+        int cc = xhci_cmd_configure_endpoint(x, priv->slotid, in_dma);
         if (cc != CC_SUCCESS)
           {
             grub_dprintf("xhci", "%s: configure endpoint: failed (cc %d)\n", __func__, cc);

@@ -398,7 +398,7 @@ struct grub_xhci
   struct xhci_portmap usb3;
   /* xhci data structures */
   struct grub_pci_dma_chunk *devs_dma;
-  struct grub_xhci_devlist *devs;
+  volatile struct grub_xhci_devlist *devs;
   struct grub_pci_dma_chunk *cmds_dma;
   volatile struct grub_xhci_ring *cmds;
   struct grub_pci_dma_chunk *evts_dma;
@@ -411,11 +411,11 @@ struct grub_xhci
 };
 
 struct grub_xhci_priv {
-  grub_uint8_t              slotid;
-  grub_uint32_t             max_packet; // maximum packet size
-  struct grub_pci_dma_chunk *enpoint_trbs_dma[32];
-  struct grub_xhci_trb      *enpoint_trbs[32];
-  struct grub_pci_dma_chunk *slotctx_dma;
+  grub_uint8_t                    slotid;
+  grub_uint32_t                   max_packet; // maximum packet size
+  struct grub_pci_dma_chunk       *enpoint_trbs_dma[32];
+  volatile struct grub_xhci_ring  *enpoint_trbs[32];
+  struct grub_pci_dma_chunk       *slotctx_dma;
 };
 
 struct grub_xhci_port {
@@ -523,7 +523,7 @@ static void xhci_doorbell(struct grub_xhci *x, grub_uint32_t slotid, grub_uint32
 static void xhci_process_events(struct grub_xhci *x)
 {
     volatile struct grub_xhci_ring *evts = x->evts;
-    grub_arch_sync_caches(evts, sizeof(*evts));
+    // XXX invalidate caches
 
     for (;;) {
         /* check for event */
@@ -642,45 +642,68 @@ static int xhci_event_wait(struct grub_xhci *x,
     }
 }
 
-// Add a TRB to the given ring
-static void xhci_trb_fill( volatile struct grub_xhci_ring *ring,
+static void xhci_trb_fill_inline( volatile struct grub_xhci_ring *ring,
                           void *data, grub_uint32_t xferlen, grub_uint32_t flags)
 {
   volatile struct grub_xhci_trb *dst = &ring->ring[ring->nidx];
-  if (flags & TRB_TR_IDT)
-    {
-      grub_memcpy(&dst->ptr_low, data, xferlen & 0x1ffff);
-      grub_arch_sync_dma_caches(&dst->ptr_low, xferlen & 0x1ffff);
-    }
-    else
-    {
-      dst->ptr_low = (grub_uint32_t)data;
-      dst->ptr_high = 0;
-    }
+  if (xferlen > 8)
+    return;
+  /* Use the pointer to DMA buffer to hold the actual data */
+  grub_memcpy((void *)&dst->ptr_low, data, xferlen);
   dst->status = xferlen;
   dst->control = flags | (ring->cs ? TRB_C : 0);
 
   grub_arch_sync_dma_caches(dst, sizeof(ring->ring[0]));
 }
 
+static void xhci_trb_fill_regular( volatile struct grub_xhci_ring *ring,
+                          void *data, grub_uint32_t xferlen, grub_uint32_t flags)
+{
+  volatile struct grub_xhci_trb *dst = &ring->ring[ring->nidx];
+  dst->ptr_low = (grub_uint64_t)(grub_addr_t)data;
+  dst->ptr_high = ((grub_uint64_t)(grub_addr_t)data) >> 32;
+  dst->status = xferlen;
+  dst->control = flags | (ring->cs ? TRB_C : 0);
+
+  grub_arch_sync_dma_caches(dst, sizeof(ring->ring[0]));
+}
+
+// Add a TRB to the given ring
+static void xhci_trb_fill(volatile struct grub_xhci_ring *ring,
+                          void *data, grub_uint32_t xferlen, grub_uint32_t flags)
+{
+  if (flags & TRB_TR_IDT && xferlen <= 8)
+    {
+      xhci_trb_fill_inline(ring, data, xferlen, flags);
+    }
+    else
+    {
+      xhci_trb_fill_regular(ring, data, xferlen, flags & ~TRB_TR_IDT);
+    }
+}
+
 // Queue a TRB onto a ring, wrapping ring as needed
+// XXX data should be a dma buffer, but we get anything, likely a virtual address
 static void xhci_trb_queue(volatile struct grub_xhci_ring *ring,
                            void *data, grub_uint32_t xferlen, grub_uint32_t flags)
 {
   grub_dprintf("xhci", "%s: ring %p data %p len %d flags 0x%x remain 0x%x\n", __func__,
-  ring, data, xferlen & 0x1ffff, flags, xferlen >> 17);
+      ring, data, xferlen & 0x1ffff, flags, xferlen >> 17);
 
-  if (xhci_ring_full(ring)) {
-    grub_dprintf("xhci", "%s: ERROR: ring %p is full, discarding TRB\n",
-      __func__, ring);
-    return;
-  }
-  if (ring->nidx >= ARRAY_SIZE(ring->ring) - 1) {
-    xhci_trb_fill(ring, ring->ring, 0, (TR_LINK << 10) | TRB_LK_TC);
-    ring->nidx = 0;
-    ring->cs ^= 1;
-    grub_dprintf("xhci", "%s: ring %p [linked]\n", __func__, ring);
-  }
+  if (xhci_ring_full(ring))
+    {
+      grub_dprintf("xhci", "%s: ERROR: ring %p is full, discarding TRB\n",
+        __func__, ring);
+      return;
+    }
+
+  if (ring->nidx >= ARRAY_SIZE(ring->ring) - 1)
+    {
+      xhci_trb_fill(ring, ring->ring, 0, (TR_LINK << 10) | TRB_LK_TC);
+      ring->nidx = 0;
+      ring->cs ^= 1;
+      grub_dprintf("xhci", "%s: ring %p [linked]\n", __func__, ring);
+    }
 
   xhci_trb_fill(ring, data, xferlen, flags);
   ring->nidx++;
@@ -714,7 +737,8 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
 }
 
 // Submit a command to the xhci controller ring
-static int xhci_cmd_submit(struct grub_xhci *x, struct grub_xhci_inctx *inctx
+static int xhci_cmd_submit(struct grub_xhci *x,
+                          volatile struct grub_xhci_inctx *inctx
                            , grub_uint32_t flags)
 {
   /* Don't submit if halted, it will fail */
@@ -778,7 +802,7 @@ static int xhci_cmd_reset_endpoint(struct grub_xhci *x, grub_uint32_t slotid
 
 static int xhci_cmd_set_dequeue_pointer(struct grub_xhci *x, grub_uint32_t slotid
                                        , grub_uint32_t epid
-                                       , grub_uint64_t tr_deque_pointer)
+                                       , grub_addr_t tr_deque_pointer)
 {
     xhci_trb_queue(x->cmds, (void *)tr_deque_pointer, 0,
                    (CR_SET_TR_DEQUEUE << 10) | (epid << 16) | (slotid << 24));
@@ -826,7 +850,7 @@ grub_xhci_alloc_inctx(struct grub_xhci *x, int maxepid,
       return NULL;
 
   volatile struct grub_xhci_inctx *in = grub_dma_get_virt(dma);
-  grub_memset(in, 0, size);
+  grub_memset((void *)in, 0, size);
 
   struct grub_xhci_slotctx *slot = (void*)&in[1 << x->flag64];
   slot->ctx[0]    |= maxepid << 27; // context entries
@@ -875,7 +899,7 @@ grub_xhci_alloc_inctx(struct grub_xhci *x, int maxepid,
   return dma;
 }
 
-static grub_err_t
+static grub_usb_err_t
 grub_xhci_reset (struct grub_xhci *x)
 {
   grub_uint32_t reg;
@@ -1201,7 +1225,7 @@ grub_xhci_update_hub_portcount (struct grub_xhci *x,
   in_dma = grub_xhci_alloc_inctx(x, epid, transfer->dev);
   if (!in_dma)
     return GRUB_USB_ERR_INTERNAL;
-  struct grub_xhci_inctx *in = grub_dma_get_virt(in_dma);
+  volatile struct grub_xhci_inctx *in = grub_dma_get_virt(in_dma);
 
   in->add = (1 << epid);
 
@@ -1244,7 +1268,7 @@ grub_xhci_update_max_paket_size (struct grub_xhci *x,
   in_dma = grub_xhci_alloc_inctx(x, epid, transfer->dev);
   if (!in_dma)
     return GRUB_USB_ERR_INTERNAL;
-  struct grub_xhci_inctx *in = grub_dma_get_virt(in_dma);
+  volatile struct grub_xhci_inctx *in = grub_dma_get_virt(in_dma);
   in->add = (1 << epid);
 
   struct grub_xhci_epctx *ep = (void*)&in[(epid+1) << x->flag64];
@@ -1300,12 +1324,12 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
   if (priv->slotid > 0 && priv->enpoint_trbs[epid] != NULL)
     return GRUB_USB_ERR_NONE;
 
-  /* Allocate DMA buffer as endpoint TRB */
+  /* Allocate DMA buffer as endpoint cmd TRB */
   reqs_dma = grub_memalign_dma32(GRUB_XHCI_RING_SIZE, sizeof(*reqs));
   if (!reqs_dma)
     return GRUB_USB_ERR_INTERNAL;
   reqs = grub_dma_get_virt(reqs_dma);
-  grub_memset(reqs, 0, sizeof(*reqs));
+  grub_memset((void *)reqs, 0, sizeof(*reqs));
   reqs->cs = 1;
 
   grub_arch_sync_dma_caches(reqs, sizeof(*reqs));
@@ -1341,11 +1365,12 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
   if (epid == 1 || priv->slotid == 0) {
     // Enable slot.
     int slotid = xhci_cmd_enable_slot(x);
-    if (slotid < 0) {
+    if (slotid < 0)
+      {
         grub_dprintf("xhci", "%s: enable slot: failed\n", __func__);
         grub_dma_free(in_dma);
         return GRUB_USB_ERR_BADDEVICE;
-    }
+      }
     grub_dprintf("xhci", "%s: get slot %d assigned\n", __func__, slotid);
 
     grub_uint32_t size = (sizeof(struct grub_xhci_slotctx) * 32) << x->flag64;
@@ -1370,7 +1395,8 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
 
     // Send set_address command.
     int cc = xhci_cmd_address_device(x, slotid, in);
-    if (cc != CC_SUCCESS) {
+    if (cc != CC_SUCCESS)
+      {
         grub_dprintf("xhci","%s: address device: failed (cc %d)\n", __func__, cc);
         cc = xhci_cmd_disable_slot(x, slotid);
         if (cc != CC_SUCCESS) {
@@ -1381,24 +1407,25 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
         grub_dma_free(priv->slotctx_dma);
         grub_dma_free(in_dma);
         return GRUB_USB_ERR_BADDEVICE;
-    }
+      }
     priv->enpoint_trbs[epid] = reqs;
     priv->enpoint_trbs_dma[epid] = reqs_dma;
     priv->slotid = slotid;
     priv->max_packet = 0;
-
   }
-  if (epid != 1) {
-      // Send configure command.
-      int cc = xhci_cmd_configure_endpoint(x, priv->slotid, in);
-      if (cc != CC_SUCCESS) {
-          grub_dprintf("xhci", "%s: configure endpoint: failed (cc %d)\n", __func__, cc);
-          grub_dma_free(in_dma);
-          return GRUB_USB_ERR_BADDEVICE;
-      }
-    priv->enpoint_trbs[epid] = reqs;
-    priv->enpoint_trbs_dma[epid] = reqs_dma;
-  }
+  if (epid != 1)
+    {
+        // Send configure command.
+        int cc = xhci_cmd_configure_endpoint(x, priv->slotid, in);
+        if (cc != CC_SUCCESS)
+          {
+            grub_dprintf("xhci", "%s: configure endpoint: failed (cc %d)\n", __func__, cc);
+            grub_dma_free(in_dma);
+            return GRUB_USB_ERR_BADDEVICE;
+          }
+      priv->enpoint_trbs[epid] = reqs;
+      priv->enpoint_trbs_dma[epid] = reqs_dma;
+    }
 
   grub_dprintf("xhci", "%s:done\n", __func__);
   grub_dma_free(in_dma);
@@ -1529,7 +1556,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
   grub_uint8_t epid;
   grub_usb_err_t err;
-  struct grub_xhci_ring *reqs;
+  volatile struct grub_xhci_ring *reqs;
   int rc;
   struct grub_xhci_priv *priv;
 
@@ -1594,88 +1621,89 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
       return GRUB_USB_ERR_INTERNAL;
 
     for (int i = 0; i < transfer->transcnt; i++)
-    {
-      grub_uint32_t flags = 0;
-      grub_usb_transaction_t tr = &transfer->transactions[i];
+      {
+        grub_uint32_t flags = 0;
+        grub_usb_transaction_t tr = &transfer->transactions[i];
 
-      switch (tr->pid) {
-        case GRUB_USB_TRANSFER_TYPE_SETUP:
-            grub_dprintf("xhci", "%s: SETUP PKG\n", __func__);
-            grub_dprintf("xhci", "%s: transfer->size %d\n", __func__, transfer->size);
-            grub_dprintf("xhci", "%s: tr->size %d SETUP PKG\n", __func__, tr->size);
+        switch (tr->pid) {
+          case GRUB_USB_TRANSFER_TYPE_SETUP:
+              grub_dprintf("xhci", "%s: SETUP PKG\n", __func__);
+              grub_dprintf("xhci", "%s: transfer->size %d\n", __func__, transfer->size);
+              grub_dprintf("xhci", "%s: tr->size %d SETUP PKG\n", __func__, tr->size);
 
-          flags |= (TR_SETUP << 10);
-          flags |= TRB_TR_IDT;
+            flags |= (TR_SETUP << 10);
+            flags |= TRB_TR_IDT;
 
-          if (transfer->size > 0) {
-            if (transfer->transactions[i+1].pid == GRUB_USB_TRANSFER_TYPE_IN) {
-              flags |= (3 << 16); // TRT IN
-            } else {
-              flags |= (2 << 16); // TRT OUT
+            if (transfer->size > 0) {
+              if (transfer->transactions[i+1].pid == GRUB_USB_TRANSFER_TYPE_IN) {
+                flags |= (3 << 16); // TRT IN
+              } else {
+                flags |= (2 << 16); // TRT OUT
+              }
             }
-          }
-          break;
-        case GRUB_USB_TRANSFER_TYPE_OUT:
-          grub_dprintf("xhci", "%s: OUT PKG\n", __func__);
-          cdata->transfer_size += tr->size;
-          break;
-        case GRUB_USB_TRANSFER_TYPE_IN:
-          grub_dprintf("xhci", "%s: IN PKG\n", __func__);
-          cdata->transfer_size += tr->size;
-          flags |= TRB_TR_DIR; // DIR IN
-          break;
-      }
+            break;
+          case GRUB_USB_TRANSFER_TYPE_OUT:
+            grub_dprintf("xhci", "%s: OUT PKG\n", __func__);
+            cdata->transfer_size += tr->size;
+            break;
+          case GRUB_USB_TRANSFER_TYPE_IN:
+            grub_dprintf("xhci", "%s: IN PKG\n", __func__);
+            cdata->transfer_size += tr->size;
+            flags |= TRB_TR_DIR; // DIR IN
+            break;
+        }
 
-      if (grub_xhci_transfer_is_normal(transfer, i)) {
-        flags |= (TR_NORMAL << 10);
-      } else if (grub_xhci_transfer_is_data(transfer, i)) {
-        flags |= (TR_DATA << 10);
-      } else if (grub_xhci_transfer_is_zlp(transfer, i)) {
-        flags |= (TR_STATUS << 10);
-      }
-      if (grub_xhci_transfer_next_is_normal(transfer, i)) {
-        flags |= TRB_TR_CH;
-      }
-      if (grub_xhci_transfer_is_last(transfer, i)) {
-        flags |= TRB_TR_IOC;
-      }
+        if (grub_xhci_transfer_is_normal(transfer, i)) {
+          flags |= (TR_NORMAL << 10);
+        } else if (grub_xhci_transfer_is_data(transfer, i)) {
+          flags |= (TR_DATA << 10);
+        } else if (grub_xhci_transfer_is_zlp(transfer, i)) {
+          flags |= (TR_STATUS << 10);
+        }
+        if (grub_xhci_transfer_next_is_normal(transfer, i)) {
+          flags |= TRB_TR_CH;
+        }
+        if (grub_xhci_transfer_is_last(transfer, i)) {
+          flags |= TRB_TR_IOC;
+        }
 
-      // Assume the ring has enough free space for all TRBs
-      xhci_trb_queue(reqs, (void *)tr->data, tr->size, flags);
+        // Assume the ring has enough free space for all TRBs
+        xhci_trb_queue(reqs, (void *)tr->data, tr->size, flags);
 
-    }
-  } else if (transfer->type == GRUB_USB_TRANSACTION_TYPE_BULK) {
-
-    for (int i = 0; i < transfer->transcnt; i++)
-    {
-      grub_uint32_t flags = (TR_NORMAL << 10);
-      grub_usb_transaction_t tr = &transfer->transactions[i];
-      switch (tr->pid) {
-        case GRUB_USB_TRANSFER_TYPE_OUT:
-           grub_dprintf("xhci", "%s: OUT PKG\n", __func__);
-           cdata->transfer_size += tr->size;
-          break;
-        case GRUB_USB_TRANSFER_TYPE_IN:
-           grub_dprintf("xhci", "%s: IN PKG\n", __func__);
-           cdata->transfer_size += tr->size;
-          flags |= TRB_TR_DIR; // DIR IN
-          break;
-        case GRUB_USB_TRANSFER_TYPE_SETUP:
-          break;
       }
-      if (grub_xhci_transfer_is_last(transfer, i)) {
-        flags |= TRB_TR_IOC;
-      }
-      // The ring might be to small, submit while adding new entries
-      rc = xhci_trb_queue_and_flush(x, priv->slotid, epid,
-                               reqs, (void *)tr->data, tr->size, flags);
-      if (rc < 0) {
-        return GRUB_USB_ERR_TIMEOUT;
-      } else if (rc > 1) {
-        return grub_xhci_usb_to_grub_err(rc);
-      }
-    }
   }
+  else if (transfer->type == GRUB_USB_TRANSACTION_TYPE_BULK)
+    {
+      for (int i = 0; i < transfer->transcnt; i++)
+        {
+          grub_uint32_t flags = (TR_NORMAL << 10);
+          grub_usb_transaction_t tr = &transfer->transactions[i];
+          switch (tr->pid) {
+            case GRUB_USB_TRANSFER_TYPE_OUT:
+              grub_dprintf("xhci", "%s: OUT PKG\n", __func__);
+              cdata->transfer_size += tr->size;
+              break;
+            case GRUB_USB_TRANSFER_TYPE_IN:
+              grub_dprintf("xhci", "%s: IN PKG\n", __func__);
+              cdata->transfer_size += tr->size;
+              flags |= TRB_TR_DIR; // DIR IN
+              break;
+            case GRUB_USB_TRANSFER_TYPE_SETUP:
+              break;
+          }
+          if (grub_xhci_transfer_is_last(transfer, i))
+            flags |= TRB_TR_IOC;
+      
+          // The ring might be to small, submit while adding new entries
+          rc = xhci_trb_queue_and_flush(x, priv->slotid, epid,
+                                  reqs, (void *)tr->data, tr->size, flags);
+          if (rc < 0) {
+            return GRUB_USB_ERR_TIMEOUT;
+          } else if (rc > 1) {
+            return grub_xhci_usb_to_grub_err(rc);
+          }
+        }
+    }
   xhci_doorbell(x, priv->slotid, epid);
 
   return GRUB_USB_ERR_NONE;
@@ -1688,8 +1716,7 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
   grub_uint32_t status;
   grub_uint32_t remaining;
   grub_uint8_t epid;
-  struct grub_xhci_ring *reqs;
-
+  volatile struct grub_xhci_ring *reqs;
   grub_usb_err_t err;
   int rc;
 
@@ -1700,7 +1727,7 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
 
   struct grub_xhci_priv *priv = transfer->dev->xhci_priv;
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
-  volatile struct grub_xhci_transfer_controller_data *cdata =
+  struct grub_xhci_transfer_controller_data *cdata =
     transfer->controller_data;
 
   xhci_check_status(x);
@@ -1710,7 +1737,7 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
 
   reqs = priv->enpoint_trbs[epid];
 
-  grub_arch_sync_caches(reqs, sizeof(*reqs));
+  // XXX invalidate caches
 
   // Get current status from event ring buffer
   status = (reqs->evt.status>> 24) & 0xff;
@@ -1722,9 +1749,8 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
     *actual = 0;
   }
 
-  if (xhci_ring_busy(reqs)) {
+  if (xhci_ring_busy(reqs))
       return GRUB_USB_ERR_WAIT;
-  }
 
   // DONE
   grub_free(cdata);
@@ -1733,17 +1759,20 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
 
   err = grub_xhci_usb_to_grub_err(status);
   if (err != GRUB_USB_ERR_NONE) {
-    if (status == CC_STALL_ERROR) {
-      // Clear the stall by resetting the endpoint
-      rc = xhci_cmd_reset_endpoint(x, priv->slotid, epid, 1);
+    if (status == CC_STALL_ERROR)
+      {
+        // Clear the stall by resetting the endpoint
+        rc = xhci_cmd_reset_endpoint(x, priv->slotid, epid, 1);
 
-      if (rc < 0) {
-        return GRUB_USB_ERR_TIMEOUT;
+        if (rc < 0)
+          return GRUB_USB_ERR_TIMEOUT;
+
+        return GRUB_USB_ERR_STALL;
       }
-      return GRUB_USB_ERR_STALL;
-    } else if (remaining > 0) {
-      return GRUB_USB_ERR_DATA;
-    }
+    else if (remaining > 0)
+      {
+       return GRUB_USB_ERR_DATA;
+      }
   }
 
   return err;
@@ -1754,14 +1783,16 @@ grub_xhci_cancel_transfer (grub_usb_controller_t dev,
 			grub_usb_transfer_t transfer)
 {
   grub_uint8_t epid;
-  struct grub_xhci_ring *reqs;
-
+  volatile struct grub_xhci_ring *reqs;
+  struct grub_pci_dma_chunk *enpoint_trbs_dma;
+  grub_addr_t deque_pointer;
   int rc;
 
   if (!dev->data || !transfer->controller_data || !transfer->dev ||
-      !transfer->dev->xhci_priv) {
-    return GRUB_USB_ERR_INTERNAL;
-  }
+      !transfer->dev->xhci_priv)
+    {
+      return GRUB_USB_ERR_INTERNAL;
+    }
 
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
   struct grub_xhci_transfer_controller_data *cdata =
@@ -1770,26 +1801,31 @@ grub_xhci_cancel_transfer (grub_usb_controller_t dev,
 
   epid = grub_xhci_epid_from_transfer(transfer);
 
+  enpoint_trbs_dma = priv->enpoint_trbs_dma[epid];
   reqs = priv->enpoint_trbs[epid];
 
+  /* Abort current command */
   rc = xhci_cmd_stop_endpoint(x, priv->slotid, epid, 0);
-  if (rc < 0) {
+  if (rc < 0)
     return GRUB_USB_ERR_TIMEOUT;
-  }
 
   /* Reset state */
-  grub_xhci_write32(&reqs->nidx, 0);
-  grub_xhci_write32(&reqs->eidx, 0);
-  grub_xhci_write32(&reqs->cs, 1);
+  reqs->nidx = 0;
+  reqs->eidx = 0;
+  reqs->cs = 1;
 
-  rc = xhci_cmd_set_dequeue_pointer(x, priv->slotid, epid, ((grub_uint64_t)&reqs->ring[0]) | 1 );
-  if (rc < 0) {
-    return GRUB_USB_ERR_TIMEOUT;
-  }
-  grub_xhci_write32(&reqs->evt.ptr_low, 0);
-  grub_xhci_write32(&reqs->evt.ptr_high, 0);
-  grub_xhci_write32(&reqs->evt.control, 0);
-  grub_xhci_write32(&reqs->evt.status, 0);
+  grub_arch_sync_dma_caches(reqs, sizeof(*reqs));
+
+  /* Reset the dequeue pointer to the begging of the TRB */
+  deque_pointer = grub_dma_get_phys(enpoint_trbs_dma);
+  rc = xhci_cmd_set_dequeue_pointer(x, priv->slotid, epid, deque_pointer| 1 );
+  if (rc < 0)
+      return GRUB_USB_ERR_TIMEOUT;
+
+  reqs->evt.ptr_low = 0;
+  reqs->evt.ptr_high = 0;
+  reqs->evt.control = 0;
+  reqs->evt.status = 0;
 
   grub_arch_sync_dma_caches(reqs, sizeof(*reqs));
 
@@ -1823,7 +1859,7 @@ grub_xhci_portstatus (grub_usb_controller_t dev,
   portsc = grub_xhci_read32(&x->pr[port].portsc);
   pls = xhci_get_field(portsc, XHCI_PORTSC_PLS);
 
- grub_dprintf("xhci", "grub_xhci_portstatus port #%d: 0x%08x,%s%s pls %d enable %d\n",
+  grub_dprintf("xhci", "grub_xhci_portstatus port #%d: 0x%08x,%s%s pls %d enable %d\n",
           port, portsc,
           (portsc & GRUB_XHCI_PORTSC_PP)  ? " powered," : "",
           (portsc & GRUB_XHCI_PORTSC_PED) ? " enabled," : "",
@@ -1834,11 +1870,12 @@ grub_xhci_portstatus (grub_usb_controller_t dev,
       (!enable && !(portsc & GRUB_XHCI_PORTSC_PED)))
     return GRUB_USB_ERR_NONE;
 
-  if (!enable) {
-    // Disable port
-    grub_xhci_write32(&x->pr[port].portsc, portsc | GRUB_XHCI_PORTSC_PED);
-    return GRUB_USB_ERR_NONE;
-  }
+  if (!enable)
+    {
+      // Disable port
+      grub_xhci_write32(&x->pr[port].portsc, portsc | GRUB_XHCI_PORTSC_PED);
+      return GRUB_USB_ERR_NONE;
+   }
 
   grub_dprintf ("xhci", "portstatus: XHCI STATUS: %08x\n",
 		grub_xhci_read32(&x->op->usbsts));
@@ -1860,21 +1897,24 @@ grub_xhci_portstatus (grub_usb_controller_t dev,
 
   // Wait for device to complete reset and be enabled
   end = grub_get_time_ms () + 100;
-  for (;;) {
+  for (;;)
+    {
       portsc = grub_xhci_read32(&x->pr[port].portsc);
-      if (!(portsc & GRUB_XHCI_PORTSC_CCS)) {
+      if (!(portsc & GRUB_XHCI_PORTSC_CCS))
+        {
           // Device disconnected during reset
           grub_dprintf ("xhci","ERROR: %s device disconnected\n", __func__);
           return GRUB_USB_ERR_BADDEVICE;
-      }
+        }
       if (portsc & GRUB_XHCI_PORTSC_PED)
           // Reset complete
           break;
-      if (grub_get_time_ms () > end) {
+      if (grub_get_time_ms () > end)
+        {
           grub_dprintf ("xhci","ERROR: %s TIMEOUT\n", __func__);
           return GRUB_USB_ERR_TIMEOUT;
-      }
-  }
+        }
+    }
   xhci_check_status(x);
 
   return GRUB_USB_ERR_NONE;
@@ -1884,7 +1924,7 @@ static grub_usb_speed_t
 grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
 {
   struct grub_xhci *x = (struct grub_xhci *) dev->data;
-  grub_uint32_t portsc, pls, speed;
+  grub_uint32_t portsc, speed;
 
   *changed = 0;
 
@@ -1901,7 +1941,6 @@ grub_xhci_detect_dev (grub_usb_controller_t dev, int port, int *changed)
     return GRUB_USB_SPEED_NONE;
 
   portsc = grub_xhci_read32(&x->pr[port].portsc);
-  pls = xhci_get_field(portsc, XHCI_PORTSC_PLS);
   speed = xhci_get_field(portsc, XHCI_PORTSC_SPEED);
 
   /* Connect Status Change bit - it detects change of connection */
@@ -1946,9 +1985,10 @@ grub_xhci_attach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
     return GRUB_USB_ERR_INTERNAL;
 
   dev->xhci_priv = grub_zalloc (sizeof (struct grub_xhci_priv));
-  if (!dev->xhci_priv) {
-    return GRUB_USB_ERR_INTERNAL;
-  }
+  if (!dev->xhci_priv)
+    {
+      return GRUB_USB_ERR_INTERNAL;
+    }
 
   switch (dev->speed) {
     case GRUB_USB_SPEED_LOW:
@@ -1982,45 +2022,46 @@ grub_xhci_detach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
 {
   struct grub_xhci *x = (struct grub_xhci *) ctrl->data;
   struct grub_xhci_priv *priv;
-  int cc, i;
+  int cc = CC_SUCCESS;
 
   grub_dprintf("xhci", "%s: dev=%p\n", __func__, dev);
 
   if (!dev)
     return GRUB_USB_ERR_INTERNAL;
 
-  if (dev->xhci_priv) {
-    priv = dev->xhci_priv;
-    // Stop endpoints and free ring buffer
-    for (i = 0; i < 32; i++)
-      {
-        if (priv->enpoint_trbs[i] != NULL)
-          {
-            cc = xhci_cmd_stop_endpoint(x, priv->slotid, i, 1);
-            if (cc != CC_SUCCESS)
-              grub_dprintf("xhci", "Failed to disable EP%d on slot %d\n", i, priv->slotid);
+  if (dev->xhci_priv)
+    {
+      priv = dev->xhci_priv;
+      // Stop endpoints and free ring buffer
+      for (int i = 0; i < 32; i++)
+        {
+          if (priv->enpoint_trbs[i] != NULL)
+            {
+              cc = xhci_cmd_stop_endpoint(x, priv->slotid, i, 1);
+              if (cc != CC_SUCCESS)
+                grub_dprintf("xhci", "Failed to disable EP%d on slot %d\n", i, priv->slotid);
 
-            grub_dprintf("xhci", "grub_dma_free[%d]\n", i);
+              grub_dprintf("xhci", "grub_dma_free[%d]\n", i);
 
-            grub_dma_free(priv->enpoint_trbs_dma[i]);
-            priv->enpoint_trbs[i] = NULL;
-            priv->enpoint_trbs_dma[i] = NULL;
-          }
-      }
+              grub_dma_free(priv->enpoint_trbs_dma[i]);
+              priv->enpoint_trbs[i] = NULL;
+              priv->enpoint_trbs_dma[i] = NULL;
+            }
+        }
 
-    cc = xhci_cmd_disable_slot(x, priv->slotid);
-    if (cc == CC_SUCCESS)
-      {
-        if (priv->slotctx_dma)
-          grub_dma_free(priv->slotctx_dma);
-        x->devs[priv->slotid].ptr_low = 0;
-        x->devs[priv->slotid].ptr_high = 0;
-      }
-      else
-        grub_dprintf("xhci", "Failed to disable slot %d\n", priv->slotid);
+      cc = xhci_cmd_disable_slot(x, priv->slotid);
+      if (cc == CC_SUCCESS)
+        {
+          if (priv->slotctx_dma)
+            grub_dma_free(priv->slotctx_dma);
+          x->devs[priv->slotid].ptr_low = 0;
+          x->devs[priv->slotid].ptr_high = 0;
+        }
+        else
+          grub_dprintf("xhci", "Failed to disable slot %d\n", priv->slotid);
 
-    grub_free(dev->xhci_priv);
-  }
+      grub_free(dev->xhci_priv);
+    }
 
   dev->xhci_priv = NULL;
 
@@ -2071,7 +2112,8 @@ grub_xhci_fini_hw (int noreturn __attribute__ ((unused)))
       grub_xhci_halt (x);
 
       /* Reset xHCI */
-      return grub_xhci_reset (x);
+      if (grub_xhci_reset (x) != GRUB_USB_ERR_NONE)
+        return GRUB_ERR_BAD_DEVICE;
     }
 
   return GRUB_ERR_NONE;

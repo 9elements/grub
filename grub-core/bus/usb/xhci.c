@@ -802,12 +802,13 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
   xhci_trb_queue(ring, data_or_addr, xferlen, flags);
   /* Submit if less no free slot is remaining, we might need an additional
    * one on the next call to this function. */
-  if (submit) {
-    xhci_doorbell(x, slotid, epid);
-    int rc = xhci_event_wait(x, ring, 1000);
-    grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
-    return rc;
-  }
+  if (submit)
+    {
+      xhci_doorbell(x, slotid, epid);
+      int rc = xhci_event_wait(x, ring, 1000);
+      grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
+      return rc;
+    }
   return 0;
 }
 
@@ -824,6 +825,7 @@ static int xhci_cmd_submit(struct grub_xhci *x,
   /* Don't submit if halted, it will fail */
   if (xhci_is_halted(x))
     return -1;
+
   if (inctx_dma)
     {
       grub_xhci_inctx_sync_dma_caches(x, inctx_dma);
@@ -941,12 +943,13 @@ grub_xhci_reset (struct grub_xhci *x)
     grub_xhci_write32(&x->op->usbcmd, reg);
 
     end = grub_get_time_ms () + 32;
-    while (grub_xhci_read32(&x->op->usbcmd) & GRUB_XHCI_STS_HCH) {
-      if (grub_get_time_ms () > end) {
-          return GRUB_USB_ERR_TIMEOUT;
+    while (grub_xhci_read32(&x->op->usbcmd) & GRUB_XHCI_STS_HCH)
+      {
+        if (grub_get_time_ms () > end)
+            return GRUB_USB_ERR_TIMEOUT;
+
+        grub_millisleep(1);
       }
-      grub_millisleep(1);
-    }
   }
 
   grub_dprintf("xhci", "grub_xhci_reset: resetting HC\n");
@@ -954,21 +957,23 @@ grub_xhci_reset (struct grub_xhci *x)
 
   // Wait for device to complete reset and be enabled
   end = grub_get_time_ms () + 100;
-  while (grub_xhci_read32(&x->op->usbcmd) & GRUB_XHCI_CMD_HCRST) {
-      if (grub_get_time_ms () > end) {
+  while (grub_xhci_read32(&x->op->usbcmd) & GRUB_XHCI_CMD_HCRST)
+    {
+      if (grub_get_time_ms () > end)
           return GRUB_USB_ERR_TIMEOUT;
-      }
+
       grub_millisleep(1);
-  }
+    }
 
   // Wait for device to complete reset and be enabled
   end = grub_get_time_ms () + 100;
-  while (grub_xhci_read32(&x->op->usbsts) & GRUB_XHCI_STS_CNR) {
-      if (grub_get_time_ms () > end) {
+  while (grub_xhci_read32(&x->op->usbsts) & GRUB_XHCI_STS_CNR)
+    {
+      if (grub_get_time_ms () > end)
           return GRUB_USB_ERR_TIMEOUT;
-      }
+
       grub_millisleep(1);
-  }
+    }
 
   grub_xhci_write32(&x->op->config, x->slots);
   grub_xhci_write32(&x->op->dcbaap_low, grub_dma_get_phys(x->devs_dma));
@@ -1001,11 +1006,12 @@ grub_xhci_reset (struct grub_xhci *x)
         grub_dprintf("xhci", "%s: setup %d scratch pad buffers\n", __func__, spb);
         grub_uint64_t *spba = (grub_uint64_t *) grub_memalign_dma32(64, sizeof(*spba) * spb);
         void *pad = grub_memalign_dma32(PAGE_SIZE, PAGE_SIZE * spb);
-        if (!spba || !pad) {
+        if (!spba || !pad)
+          {
             grub_free(spba);
             grub_free(pad);
             return GRUB_USB_ERR_INTERNAL;
-        }
+          }
         for (i = 0; i < spb; i++)
             spba[i] = (grub_uint32_t)pad + (i * PAGE_SIZE);
         x->devs[0].ptr_low = (grub_uint32_t)spba;
@@ -1249,7 +1255,7 @@ grub_xhci_update_hub_portcount (struct grub_xhci *x,
 
   hdslot = grub_dma_phys2virt(x->devs[slotid].ptr_low, x->devs_dma);
   if ((hdslot->ctx[3] >> 27) == 3)
-    // Already configured
+    /* Already configured */
     return 0;
 
   grub_dprintf("xhci", "%s: updating hub config to %d ports\n", __func__,

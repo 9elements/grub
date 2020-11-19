@@ -727,22 +727,8 @@ static int xhci_event_wait(struct grub_xhci *x,
     }
 }
 
-/* Fill a TRB and reuse the pointer to DMA buffer as actual payload data */
-static void xhci_trb_fill_inline( volatile struct grub_xhci_ring *ring,
-                          grub_uint64_t ptr, grub_uint32_t xferlen, grub_uint32_t flags)
-{
-  volatile struct grub_xhci_trb *dst = &ring->ring[ring->nidx];
-  if (xferlen > 8)
-    return;
-  grub_memcpy((void *)&dst->ptr_low, &ptr, xferlen);
-  dst->status = xferlen;
-  dst->control = flags | (ring->cs ? TRB_C : 0);
-
-  grub_arch_sync_dma_caches(dst, sizeof(ring->ring[0]));
-}
-
-/* Fill a TRB pointing to a DMA buffer as actual payload data */
-static void xhci_trb_fill_regular( volatile struct grub_xhci_ring *ring,
+/* Add a TRB to the given ring, either regular or inline */
+static void xhci_trb_fill(volatile struct grub_xhci_ring *ring,
                           grub_uint64_t ptr, grub_uint32_t xferlen,
                           grub_uint32_t flags)
 {
@@ -753,21 +739,6 @@ static void xhci_trb_fill_regular( volatile struct grub_xhci_ring *ring,
   dst->control = flags | (ring->cs ? TRB_C : 0);
 
   grub_arch_sync_dma_caches(dst, sizeof(ring->ring[0]));
-}
-
-/* Add a TRB to the given ring, either regular or inline */
-static void xhci_trb_fill(volatile struct grub_xhci_ring *ring,
-                          grub_uint64_t ptr, grub_uint32_t xferlen,
-                          grub_uint32_t flags)
-{
-  if (flags & TRB_TR_IDT)
-    {
-      xhci_trb_fill_inline(ring, ptr, xferlen, flags);
-    }
-    else
-    {
-      xhci_trb_fill_regular(ring, ptr, xferlen, flags);
-    }
 }
 
 /*

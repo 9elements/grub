@@ -1450,16 +1450,14 @@ grub_xhci_usb_to_grub_err (unsigned char status)
   else
     grub_dprintf("xhci", "%s: xfer done   (cc %d)\n", __func__, status);
 
-
-  if (status == CC_BABBLE_DETECTED) {
+  if (status == CC_BABBLE_DETECTED)
     return GRUB_USB_ERR_BABBLE;
-  } else if (status == CC_DATA_BUFFER_ERROR) {
+  else if (status == CC_DATA_BUFFER_ERROR)
     return GRUB_USB_ERR_DATA;
-  } else if (status == CC_STALL_ERROR) {
+  else if (status == CC_STALL_ERROR)
     return GRUB_USB_ERR_STALL;
-  } else if (status != CC_SUCCESS) {
+  else if (status != CC_SUCCESS)
     return GRUB_USB_ERR_NAK;
-  }
 
   return GRUB_USB_ERR_NONE;
 }
@@ -1499,16 +1497,31 @@ grub_xhci_transfer_is_data(grub_usb_transfer_t transfer,
       (tr->pid == GRUB_USB_TRANSFER_TYPE_SETUP))
     return 0;
 
-  // If there's are no DATA pakets before it's a DATA paket
-  for (int i = idx - 1; i >= 0; i--) {
-    tr = &transfer->transactions[i];
-    if (tr->size > 0 &&
-        ((tr->pid == GRUB_USB_TRANSFER_TYPE_OUT) ||
-        (tr->pid == GRUB_USB_TRANSFER_TYPE_IN))) {
-          return 0;
+  /* If there's are no DATA pakets before it's a DATA paket */
+  for (int i = idx - 1; i >= 0; i--)
+    {
+      tr = &transfer->transactions[i];
+      if (tr->size > 0 &&
+          ((tr->pid == GRUB_USB_TRANSFER_TYPE_OUT) ||
+          (tr->pid == GRUB_USB_TRANSFER_TYPE_IN)))
+            return 0;
+
     }
-  }
   return 1;
+}
+
+static int
+grub_xhci_transfer_is_in(grub_usb_transfer_t transfer,
+                         int idx)
+{
+  grub_usb_transaction_t tr;
+
+  if (idx >= transfer->transcnt)
+    return 0;
+
+  tr = &transfer->transactions[idx];
+
+  return tr->pid == GRUB_USB_TRANSFER_TYPE_IN;
 }
 
 static int
@@ -1525,23 +1538,29 @@ grub_xhci_transfer_is_normal(grub_usb_transfer_t transfer,
       (tr->pid == GRUB_USB_TRANSFER_TYPE_SETUP))
     return 0;
 
-  // If there's at least one DATA paket before it's a normal
-  for (int i = idx - 1; i >= 0; i--) {
-    tr = &transfer->transactions[i];
-    if (tr->size > 0 &&
-        ((tr->pid == GRUB_USB_TRANSFER_TYPE_OUT) ||
-        (tr->pid == GRUB_USB_TRANSFER_TYPE_IN))) {
-          return 1;
+  /* If there's at least one DATA paket before it's a normal */
+  for (int i = idx - 1; i >= 0; i--)
+    {
+      tr = &transfer->transactions[i];
+      if (tr->size > 0 &&
+          ((tr->pid == GRUB_USB_TRANSFER_TYPE_OUT) ||
+          (tr->pid == GRUB_USB_TRANSFER_TYPE_IN))) 
+            return 1;
+
     }
-  }
   return 0;
 }
 
 static int
-grub_xhci_transfer_next_is_normal(grub_usb_transfer_t transfer,
-                                  int idx)
+grub_xhci_transfer_next_is_normal(grub_usb_transfer_t transfer, int idx)
 {
   return grub_xhci_transfer_is_normal(transfer, idx + 1);
+}
+
+static int
+grub_xhci_transfer_next_is_in(grub_usb_transfer_t transfer, int idx)
+{
+  return grub_xhci_transfer_is_in(transfer, idx + 1);
 }
 
 static grub_uint8_t grub_xhci_epid_from_transfer(grub_usb_transfer_t transfer)
@@ -1644,13 +1663,13 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
             flags |= (TR_SETUP << 10);
             flags |= TRB_TR_IDT;
 
-            if (transfer->size > 0) {
-              if (transfer->transactions[i+1].pid == GRUB_USB_TRANSFER_TYPE_IN) {
-                flags |= (3 << 16); // TRT IN
-              } else {
-                flags |= (2 << 16); // TRT OUT
+            if (transfer->size > 0)
+              {
+                if (grub_xhci_transfer_next_is_in(transfer, i))
+                  flags |= (3 << 16); /* TRT IN */
+                else
+                  flags |= (2 << 16); /* TRT OUT */
               }
-            }
             break;
           case GRUB_USB_TRANSFER_TYPE_OUT:
             grub_dprintf("xhci", "%s: OUT PKG\n", __func__);
@@ -1659,27 +1678,25 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
           case GRUB_USB_TRANSFER_TYPE_IN:
             grub_dprintf("xhci", "%s: IN PKG\n", __func__);
             cdata->transfer_size += tr->size;
-            flags |= TRB_TR_DIR; // DIR IN
+            flags |= TRB_TR_DIR;
             break;
         }
 
-        if (grub_xhci_transfer_is_normal(transfer, i)) {
+        if (grub_xhci_transfer_is_normal(transfer, i))
           flags |= (TR_NORMAL << 10);
-        } else if (grub_xhci_transfer_is_data(transfer, i)) {
+        else if (grub_xhci_transfer_is_data(transfer, i))
           flags |= (TR_DATA << 10);
-        } else if (grub_xhci_transfer_is_zlp(transfer, i)) {
+        else if (grub_xhci_transfer_is_zlp(transfer, i))
           flags |= (TR_STATUS << 10);
-        }
-        if (grub_xhci_transfer_next_is_normal(transfer, i)) {
+
+        if (grub_xhci_transfer_next_is_normal(transfer, i))
           flags |= TRB_TR_CH;
-        }
-        if (grub_xhci_transfer_is_last(transfer, i)) {
+
+        if (grub_xhci_transfer_is_last(transfer, i))
           flags |= TRB_TR_IOC;
-        }
 
         // Assume the ring has enough free space for all TRBs
         xhci_trb_queue(reqs, (void *)tr->data, tr->size, flags);
-
       }
   }
   else if (transfer->type == GRUB_USB_TRANSACTION_TYPE_BULK)
@@ -1768,22 +1785,23 @@ grub_xhci_check_transfer (grub_usb_controller_t dev,
   grub_dprintf("xhci", "%s: xfer done\n", __func__);
 
   err = grub_xhci_usb_to_grub_err(status);
-  if (err != GRUB_USB_ERR_NONE) {
-    if (status == CC_STALL_ERROR)
-      {
-        // Clear the stall by resetting the endpoint
-        rc = xhci_cmd_reset_endpoint(x, priv->slotid, epid, 1);
+  if (err != GRUB_USB_ERR_NONE)
+    {
+      if (status == CC_STALL_ERROR)
+        {
+          // Clear the stall by resetting the endpoint
+          rc = xhci_cmd_reset_endpoint(x, priv->slotid, epid, 1);
 
-        if (rc < 0)
-          return GRUB_USB_ERR_TIMEOUT;
+          if (rc < 0)
+            return GRUB_USB_ERR_TIMEOUT;
 
-        return GRUB_USB_ERR_STALL;
-      }
-    else if (remaining > 0)
-      {
-       return GRUB_USB_ERR_DATA;
-      }
-  }
+          return GRUB_USB_ERR_STALL;
+        }
+      else if (remaining > 0)
+        {
+        return GRUB_USB_ERR_DATA;
+        }
+    }
 
   return err;
 }

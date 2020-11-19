@@ -682,8 +682,13 @@ static void xhci_trb_fill(volatile struct grub_xhci_ring *ring,
     }
 }
 
-// Queue a TRB onto a ring, wrapping ring as needed
-// XXX data should be a dma buffer, but we get anything, likely a virtual address
+/*
+ * Queue a TRB onto a ring.
+ *
+ * The caller must pass a pointer to the data in physical address-space or the
+ * data itself (but no more than 8 bytes) in data_or_addr. Inline data must have
+ * the flag TRB_TR_IDT set.
+ */
 static void xhci_trb_queue(volatile struct grub_xhci_ring *ring,
                            void *data, grub_uint32_t xferlen, grub_uint32_t flags)
 {
@@ -1268,7 +1273,7 @@ grub_xhci_update_max_paket_size (struct grub_xhci *x,
 
   xhci_check_status(x);
 
-  // Allocate input context and initialize endpoint info.
+  /* Allocate input context and initialize endpoint info. */
   in_dma = grub_xhci_alloc_inctx(x, epid, transfer->dev);
   if (!in_dma)
     return GRUB_USB_ERR_INTERNAL;
@@ -1338,7 +1343,7 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
 
   grub_arch_sync_dma_caches(reqs, sizeof(*reqs));
 
-  // Allocate input context and initialize endpoint info.
+  /* Allocate input context and initialize endpoint info. */
   in_dma = grub_xhci_alloc_inctx(x, epid, dev);
   if (!in_dma)
     return GRUB_USB_ERR_INTERNAL;
@@ -1359,7 +1364,7 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
       ep->ctx[1] |= 1 << 5;
   ep->ctx[1]   |= maxpaket << 16;
   ep->deq_low  = grub_dma_get_phys(reqs_dma);
-  ep->deq_low  |= 1;         // dcs
+  ep->deq_low  |= 1;         /* dcs */
   ep->length   = maxpaket;
 
   grub_arch_sync_dma_caches(in, sizeof(*in));
@@ -1367,7 +1372,7 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
   grub_dprintf("xhci", "%s: ring %p, epid %d, max %d\n", __func__,
             reqs, epid, maxpaket);
   if (epid == 1 || priv->slotid == 0) {
-    // Enable slot.
+    /* Enable slot. */
     int slotid = xhci_cmd_enable_slot(x);
     if (slotid < 0)
       {
@@ -1397,7 +1402,7 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
 
     grub_arch_sync_dma_caches(slotctx, sizeof(*slotctx));
 
-    // Send set_address command.
+    /* Send set_address command. */
     int cc = xhci_cmd_address_device(x, slotid, in_dma);
     if (cc != CC_SUCCESS)
       {
@@ -1419,7 +1424,7 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
   }
   if (epid != 1)
     {
-        // Send configure command.
+        /* Send configure command. */
         int cc = xhci_cmd_configure_endpoint(x, priv->slotid, in_dma);
         if (cc != CC_SUCCESS)
           {
@@ -1582,7 +1587,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
 
   epid = grub_xhci_epid_from_transfer(transfer);
 
-  // Update the max packet size once descdev.maxsize0 is valid
+  /* Update the max packet size once descdev.maxsize0 is valid */
   if (epid == 1 &&
     (priv->max_packet == 0) &&
     (transfer->dev->descdev.maxsize0 > 0)) {
@@ -1603,6 +1608,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
     }
   }
 
+  /* Allocate private data for the transfer */
   cdata = grub_zalloc(sizeof(*cdata));
   if (!cdata)
     return GRUB_USB_ERR_INTERNAL;
@@ -1611,7 +1617,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
 
   transfer->controller_data = cdata;
 
-  // Now queue the transfers
+  /* Now queue the transfer onto the TRB */
   if (transfer->type == GRUB_USB_TRANSACTION_TYPE_CONTROL) {
     volatile struct grub_usb_packet_setup *setupdata;
     setupdata = (void *)transfer->transactions[0].data;
@@ -1690,7 +1696,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
             case GRUB_USB_TRANSFER_TYPE_IN:
               grub_dprintf("xhci", "%s: IN PKG\n", __func__);
               cdata->transfer_size += tr->size;
-              flags |= TRB_TR_DIR; // DIR IN
+              flags |= TRB_TR_DIR;
               break;
             case GRUB_USB_TRANSFER_TYPE_SETUP:
               break;
@@ -2079,7 +2085,7 @@ grub_xhci_halt(struct grub_xhci *x)
 {
   grub_uint32_t reg;
 
-  // Halt the command ring
+  /* Halt the command ring */
   reg = grub_xhci_read32(&x->op->crcr_low);
   grub_xhci_write32(&x->op->crcr_low, reg | 4);
 
@@ -2088,7 +2094,7 @@ grub_xhci_halt(struct grub_xhci *x)
   if (rc < 0)
     return;
 
-  // Stop the controller
+  /* Stop the controller */
   reg = grub_xhci_read32(&x->op->usbcmd);
   if (reg & GRUB_XHCI_CMD_RS)
     {

@@ -643,13 +643,12 @@ static int xhci_event_wait(struct grub_xhci *x,
 }
 
 static void xhci_trb_fill_inline( volatile struct grub_xhci_ring *ring,
-                          void *data, grub_uint32_t xferlen, grub_uint32_t flags)
+                          grub_uint64_t ptr, grub_uint32_t xferlen, grub_uint32_t flags)
 {
   volatile struct grub_xhci_trb *dst = &ring->ring[ring->nidx];
   if (xferlen > 8)
     return;
-  /* Use the pointer to DMA buffer to hold the actual data */
-  grub_memcpy((void *)&dst->ptr_low, data, xferlen);
+  grub_memcpy((void *)&dst->ptr_low, &ptr, xferlen);
   dst->status = xferlen;
   dst->control = flags | (ring->cs ? TRB_C : 0);
 
@@ -657,11 +656,12 @@ static void xhci_trb_fill_inline( volatile struct grub_xhci_ring *ring,
 }
 
 static void xhci_trb_fill_regular( volatile struct grub_xhci_ring *ring,
-                          void *data, grub_uint32_t xferlen, grub_uint32_t flags)
+                          grub_uint64_t ptr, grub_uint32_t xferlen,
+                          grub_uint32_t flags)
 {
   volatile struct grub_xhci_trb *dst = &ring->ring[ring->nidx];
-  dst->ptr_low = (grub_uint64_t)(grub_addr_t)data;
-  dst->ptr_high = ((grub_uint64_t)(grub_addr_t)data) >> 32;
+  dst->ptr_low = ptr & 0xffffffff;
+  dst->ptr_high = (ptr >> 32) & 0xffffffff;
   dst->status = xferlen;
   dst->control = flags | (ring->cs ? TRB_C : 0);
 
@@ -670,15 +670,16 @@ static void xhci_trb_fill_regular( volatile struct grub_xhci_ring *ring,
 
 // Add a TRB to the given ring
 static void xhci_trb_fill(volatile struct grub_xhci_ring *ring,
-                          void *data, grub_uint32_t xferlen, grub_uint32_t flags)
+                          grub_uint64_t ptr, grub_uint32_t xferlen,
+                          grub_uint32_t flags)
 {
-  if (flags & TRB_TR_IDT && xferlen <= 8)
+  if (flags & TRB_TR_IDT)
     {
-      xhci_trb_fill_inline(ring, data, xferlen, flags);
+      xhci_trb_fill_inline(ring, ptr, xferlen, flags);
     }
     else
     {
-      xhci_trb_fill_regular(ring, data, xferlen, flags & ~TRB_TR_IDT);
+      xhci_trb_fill_regular(ring, ptr, xferlen, flags);
     }
 }
 
@@ -690,10 +691,11 @@ static void xhci_trb_fill(volatile struct grub_xhci_ring *ring,
  * the flag TRB_TR_IDT set.
  */
 static void xhci_trb_queue(volatile struct grub_xhci_ring *ring,
-                           void *data, grub_uint32_t xferlen, grub_uint32_t flags)
+                           grub_uint64_t data_or_addr,
+                           grub_uint32_t xferlen, grub_uint32_t flags)
 {
-  grub_dprintf("xhci", "%s: ring %p data %p len %d flags 0x%x remain 0x%x\n", __func__,
-      ring, data, xferlen & 0x1ffff, flags, xferlen >> 17);
+  grub_dprintf("xhci", "%s: ring %p data %llx len %d flags 0x%x remain 0x%x\n", __func__,
+      ring, data_or_addr, xferlen & 0x1ffff, flags, xferlen >> 17);
 
   if (xhci_ring_full(ring))
     {
@@ -704,24 +706,32 @@ static void xhci_trb_queue(volatile struct grub_xhci_ring *ring,
 
   if (ring->nidx >= ARRAY_SIZE(ring->ring) - 1)
     {
-      xhci_trb_fill(ring, ring->ring, 0, (TR_LINK << 10) | TRB_LK_TC);
+      /* Reset to command buffer pointer to the first element */
+      xhci_trb_fill(ring, (grub_addr_t)ring->ring, 0, (TR_LINK << 10) | TRB_LK_TC);
       ring->nidx = 0;
       ring->cs ^= 1;
       grub_dprintf("xhci", "%s: ring %p [linked]\n", __func__, ring);
     }
 
-  xhci_trb_fill(ring, data, xferlen, flags);
+  xhci_trb_fill(ring, data_or_addr, xferlen, flags);
   ring->nidx++;
   grub_dprintf("xhci", "%s: ring %p [nidx %d, len %d]\n",
           __func__, ring, ring->nidx, xferlen);
 }
 
-// Submit a command to the xhci controller ring and flush if full
+/*
+ * Queue a TRB onto a ring and flush it if full.
+ *
+ * The caller must pass a pointer to the data in physical address-space or the
+ * data itself (but no more than 8 bytes) in data_or_addr. Inline data must have
+ * the flag TRB_TR_IDT set.
+ */
 static int xhci_trb_queue_and_flush(struct grub_xhci *x,
                                     grub_uint32_t slotid,
                                     grub_uint32_t epid,
                                     volatile struct grub_xhci_ring *ring,
-                                    void *data, grub_uint32_t xferlen, grub_uint32_t flags)
+                                    grub_uint64_t data_or_addr,
+                                    grub_uint32_t xferlen, grub_uint32_t flags)
 {
   grub_uint8_t submit = 0;
   if (xhci_ring_almost_full(ring)) {
@@ -729,7 +739,7 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
     flags |= TRB_TR_IOC;
     submit = 1;
   }
-  xhci_trb_queue(ring, data, xferlen, flags);
+  xhci_trb_queue(ring, data_or_addr, xferlen, flags);
   // Submit if less than 1 free slot is remaining, we might need
   // two on the next call to this function
   if (submit) {
@@ -743,8 +753,8 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
 
 // Submit a command to the xhci controller ring
 static int xhci_cmd_submit(struct grub_xhci *x,
-                          struct grub_pci_dma_chunk *inctx_dma
-                           , grub_uint32_t flags)
+                           struct grub_pci_dma_chunk *inctx_dma,
+                           grub_uint32_t flags)
 {
   volatile struct grub_xhci_inctx *inctx;
   /* Don't submit if halted, it will fail */
@@ -767,7 +777,7 @@ static int xhci_cmd_submit(struct grub_xhci *x,
     }
     else
     {
-      xhci_trb_queue(x->cmds, NULL, 0, flags);
+      xhci_trb_queue(x->cmds, 0, 0, flags);
     }
     
     xhci_doorbell(x, 0, 0);
@@ -815,7 +825,7 @@ static int xhci_cmd_set_dequeue_pointer(struct grub_xhci *x, grub_uint32_t sloti
                                        , grub_uint32_t epid
                                        , grub_addr_t tr_deque_pointer)
 {
-    xhci_trb_queue(x->cmds, (void *)tr_deque_pointer, 0,
+    xhci_trb_queue(x->cmds, tr_deque_pointer, 0,
                    (CR_SET_TR_DEQUEUE << 10) | (epid << 16) | (slotid << 24));
     xhci_doorbell(x, 0, 0);
     int rc = xhci_event_wait(x, x->cmds, 1000);
@@ -1652,6 +1662,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
     for (int i = 0; i < transfer->transcnt; i++)
       {
         grub_uint32_t flags = 0;
+        grub_uint64_t inline_data;
         grub_usb_transaction_t tr = &transfer->transactions[i];
 
         switch (tr->pid) {
@@ -1695,8 +1706,16 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
         if (grub_xhci_transfer_is_last(transfer, i))
           flags |= TRB_TR_IOC;
 
-        // Assume the ring has enough free space for all TRBs
-        xhci_trb_queue(reqs, (void *)tr->data, tr->size, flags);
+        /* Assume the ring has enough free space for all TRBs */
+        if (flags & TRB_TR_IDT && tr->size <= (int)sizeof(inline_data))
+          {
+            grub_memcpy(&inline_data, (void *)tr->data, tr->size);
+            xhci_trb_queue(reqs, inline_data, tr->size, flags);
+          }
+        else
+          {
+            xhci_trb_queue(reqs, tr->data, tr->size, flags);
+          }
       }
   }
   else if (transfer->type == GRUB_USB_TRANSACTION_TYPE_BULK)
@@ -1721,14 +1740,14 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
           if (grub_xhci_transfer_is_last(transfer, i))
             flags |= TRB_TR_IOC;
       
-          // The ring might be to small, submit while adding new entries
+          /* The ring might be to small, submit while adding new entries */
           rc = xhci_trb_queue_and_flush(x, priv->slotid, epid,
-                                  reqs, (void *)tr->data, tr->size, flags);
-          if (rc < 0) {
+                                  reqs, tr->data, tr->size, flags);
+          if (rc < 0)
             return GRUB_USB_ERR_TIMEOUT;
-          } else if (rc > 1) {
+          else if (rc > 1)
             return grub_xhci_usb_to_grub_err(rc);
-          }
+  
         }
     }
   xhci_doorbell(x, priv->slotid, epid);

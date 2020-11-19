@@ -734,7 +734,7 @@ static void xhci_trb_fill(volatile struct grub_xhci_ring *ring,
 {
   volatile struct grub_xhci_trb *dst = &ring->ring[ring->nidx];
   dst->ptr_low = ptr & 0xffffffff;
-  dst->ptr_high = (ptr >> 32) & 0xffffffff;
+  dst->ptr_high = ptr >> 32;
   dst->status = xferlen;
   dst->control = flags | (ring->cs ? TRB_C : 0);
 
@@ -778,7 +778,7 @@ static void xhci_trb_queue(volatile struct grub_xhci_ring *ring,
 }
 
 /*
- * Queue a TRB onto a ring and flush it if full.
+ * Queue a TRB onto a ring and flush it if necessary.
  *
  * The caller must pass a pointer to the data in physical address-space or the
  * data itself (but no more than 8 bytes) in data_or_addr. Inline data must have
@@ -797,9 +797,11 @@ static int xhci_trb_queue_and_flush(struct grub_xhci *x,
     flags |= TRB_TR_IOC;
     submit = 1;
   }
+  /* Note: xhci_trb_queue might queue on or two elements, if the end of the TRB
+   * has been reached. The caller must account for that when filling the TRB. */
   xhci_trb_queue(ring, data_or_addr, xferlen, flags);
-  // Submit if less than 1 free slot is remaining, we might need
-  // two on the next call to this function
+  /* Submit if less no free slot is remaining, we might need an additional
+   * one on the next call to this function. */
   if (submit) {
     xhci_doorbell(x, slotid, epid);
     int rc = xhci_event_wait(x, ring, 1000);

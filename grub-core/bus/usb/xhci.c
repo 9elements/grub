@@ -857,73 +857,104 @@ static int xhci_cmd_submit(struct grub_xhci *x,
 
 static int xhci_cmd_enable_slot(struct grub_xhci *x)
 {
-    grub_dprintf("xhci", "%s:\n", __func__);
-    int cc = xhci_cmd_submit(x, NULL, CR_ENABLE_SLOT << 10);
-    if (cc != CC_SUCCESS)
-        return -1;
-    grub_dprintf("xhci", "%s: %p\n", __func__, &x->cmds->evt.control);
-    grub_dprintf("xhci", "%s: %x\n", __func__, grub_xhci_read32(&x->cmds->evt.control));
+  grub_uint32_t flags = 0;
+  flags |= (CR_ENABLE_SLOT << 10);
+
+  grub_dprintf("xhci", "%s:\n", __func__);
+  int cc = xhci_cmd_submit(x, NULL, flags);
+  if (cc != CC_SUCCESS)
+      return -1;
+  grub_dprintf("xhci", "%s: %p\n", __func__, &x->cmds->evt.control);
+  grub_dprintf("xhci", "%s: %x\n", __func__, grub_xhci_read32(&x->cmds->evt.control));
 
     return (grub_xhci_read32(&x->cmds->evt.control) >> 24) & 0xff;
 }
 
 static int xhci_cmd_disable_slot(struct grub_xhci *x, grub_uint32_t slotid)
 {
-    grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
-    return xhci_cmd_submit(x, NULL, (CR_DISABLE_SLOT << 10) | (slotid << 24));
+  grub_uint32_t flags = 0;
+  flags |= (CR_DISABLE_SLOT << 10);
+  flags |= (slotid << 24);
+
+  grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
+  return xhci_cmd_submit(x, NULL, flags);
 }
 
 static int xhci_cmd_stop_endpoint(struct grub_xhci *x, grub_uint32_t slotid
                                        , grub_uint32_t epid
                                        , grub_uint32_t suspend)
 {
-    return xhci_cmd_submit(x, NULL
-                           , (CR_STOP_ENDPOINT << 10) | (epid << 16) | (suspend << 23) | (slotid << 24));
+  grub_uint32_t flags = 0;
+  flags |= (CR_STOP_ENDPOINT << 10);
+  flags |= (epid << 16);
+  flags |= (suspend << 23) ;
+  flags |= (slotid << 24);
+
+  return xhci_cmd_submit(x, NULL, flags);
 }
 
 static int xhci_cmd_reset_endpoint(struct grub_xhci *x, grub_uint32_t slotid
                                        , grub_uint32_t epid
                                        , grub_uint32_t preserve)
 {
-    return xhci_cmd_submit(x, NULL
-                           , (preserve << 9) | (CR_RESET_ENDPOINT << 10) | (epid << 16) | (slotid << 24));
+  grub_uint32_t flags = 0;
+  flags |= (preserve << 9);
+  flags |= (CR_RESET_ENDPOINT << 10);
+  flags |= (epid << 16);
+  flags |= (slotid << 24);
+
+  return xhci_cmd_submit(x, NULL, flags);
 }
 
 static int xhci_cmd_set_dequeue_pointer(struct grub_xhci *x, grub_uint32_t slotid
                                        , grub_uint32_t epid
                                        , grub_addr_t tr_deque_pointer)
 {
-    xhci_trb_queue(x->cmds, tr_deque_pointer, 0,
-                   (CR_SET_TR_DEQUEUE << 10) | (epid << 16) | (slotid << 24));
-    xhci_doorbell(x, 0, 0);
-    int rc = xhci_event_wait(x, x->cmds, 1000);
-    grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
+  grub_uint32_t flags = 0;
+  flags |= (CR_SET_TR_DEQUEUE << 10);
+  flags |= (epid << 16);
+  flags |= (slotid << 24);
 
-    return rc;
+  xhci_trb_queue(x->cmds, tr_deque_pointer, 0, flags);
+
+  xhci_doorbell(x, 0, 0);
+  int rc = xhci_event_wait(x, x->cmds, 1000);
+  grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
+
+  return rc;
 }
 
-static int xhci_cmd_address_device(struct grub_xhci *x, grub_uint32_t slotid
-                                   , struct grub_pci_dma_chunk *inctx_dma)
+static int xhci_cmd_address_device(struct grub_xhci *x, grub_uint32_t slotid,
+                                   struct grub_pci_dma_chunk *inctx_dma)
 {
-    grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
-    return xhci_cmd_submit(x, inctx_dma
-                           , (CR_ADDRESS_DEVICE << 10) | (slotid << 24));
+  grub_uint32_t flags = 0;
+  flags |= (CR_ADDRESS_DEVICE << 10);
+  flags |= (slotid << 24);
+
+  grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
+  return xhci_cmd_submit(x, inctx_dma, flags);
 }
 
-static int xhci_cmd_configure_endpoint(struct grub_xhci *x, grub_uint32_t slotid
-                                       , struct grub_pci_dma_chunk *inctx_dma)
+static int xhci_cmd_configure_endpoint(struct grub_xhci *x, grub_uint32_t slotid,
+                                       struct grub_pci_dma_chunk *inctx_dma)
 {
-    grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
-    return xhci_cmd_submit(x, inctx_dma
-                           , (CR_CONFIGURE_ENDPOINT << 10) | (slotid << 24));
+  grub_uint32_t flags = 0;
+  flags |= (CR_CONFIGURE_ENDPOINT << 10);
+  flags |= (slotid << 24);
+
+  grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
+  return xhci_cmd_submit(x, inctx_dma, flags);
 }
 
-static int xhci_cmd_evaluate_context(struct grub_xhci *x, grub_uint32_t slotid
-                                     , struct grub_pci_dma_chunk *inctx_dma)
+static int xhci_cmd_evaluate_context(struct grub_xhci *x, grub_uint32_t slotid,
+                                     struct grub_pci_dma_chunk *inctx_dma)
 {
-    grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
-    return xhci_cmd_submit(x, inctx_dma
-                           , (CR_EVALUATE_CONTEXT << 10) | (slotid << 24));
+  grub_uint32_t flags = 0;
+  flags |= (CR_EVALUATE_CONTEXT << 10);
+  flags |= (slotid << 24);
+
+  grub_dprintf("xhci", "%s: slotid %d\n", __func__, slotid);
+  return xhci_cmd_submit(x, inctx_dma, flags);
 }
 
 /****************************************************************
@@ -938,19 +969,20 @@ grub_xhci_reset (struct grub_xhci *x)
   grub_uint32_t i;
 
   reg = grub_xhci_read32(&x->op->usbcmd);
-  if (reg & GRUB_XHCI_CMD_RS) {
-    reg &= ~GRUB_XHCI_CMD_RS;
-    grub_xhci_write32(&x->op->usbcmd, reg);
+  if (reg & GRUB_XHCI_CMD_RS)
+    {
+      reg &= ~GRUB_XHCI_CMD_RS;
+      grub_xhci_write32(&x->op->usbcmd, reg);
 
-    end = grub_get_time_ms () + 32;
-    while (grub_xhci_read32(&x->op->usbcmd) & GRUB_XHCI_STS_HCH)
-      {
-        if (grub_get_time_ms () > end)
-            return GRUB_USB_ERR_TIMEOUT;
+      end = grub_get_time_ms () + 32;
+      while (grub_xhci_read32(&x->op->usbcmd) & GRUB_XHCI_STS_HCH)
+        {
+          if (grub_get_time_ms () > end)
+              return GRUB_USB_ERR_TIMEOUT;
 
-        grub_millisleep(1);
-      }
-  }
+          grub_millisleep(1);
+        }
+    }
 
   grub_dprintf("xhci", "grub_xhci_reset: resetting HC\n");
   grub_xhci_write32(&x->op->usbcmd, GRUB_XHCI_CMD_HCRST);

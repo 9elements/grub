@@ -38,9 +38,12 @@
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
-// This simple GRUB implementation of XHCI driver
+/* This simple GRUB implementation of XHCI driver */
+/* Based on the specification
+ * "eXtensible Host Controller Interface for Universal Serial Bus" Revision 1.2
+ */
 
-/* Seabios stuff */
+
 #define PAGE_SIZE 4096
 #define xhci_get_field(data, field)	     \
     (((data) >> field##_SHIFT) & field##_MASK)
@@ -57,6 +60,7 @@ enum
   XHCI_USB_SUPERSPEED
 };
 
+/* Chapter 5.3 Host Controller Capability Registers */
 struct grub_xhci_caps {
     grub_uint8_t  caplength;
     grub_uint8_t  reserved_01;
@@ -67,6 +71,7 @@ struct grub_xhci_caps {
     grub_uint32_t hccparams;
     grub_uint32_t dboff;
     grub_uint32_t rtsoff;
+    grub_uint32_t hccparams2;
 } GRUB_PACKED;
 
 // extended capabilities
@@ -126,8 +131,16 @@ enum
 /* Interrupter Registers Offset */
 #define GRUB_XHCI_IR_OFFSET 0x20
 
-
 /* Port Status and Control registers offsets */
+
+/* Chapter 6 Data Structures */
+#define ALIGN_SPBA 64
+#define ALIGN_DCBAA 64
+#define ALIGN_CMD_RING_SEG 64
+#define ALIGN_EVT_RING_SEG 64
+#define ALIGN_EVT_RING_TABLE 64
+#define ALIGN_TRB 16
+#define ALIGN_INCTX 64
 
 enum
 {
@@ -157,6 +170,7 @@ enum
 };
 
 /* XHCI memory data structs */
+#define GRUB_XHCI_MAX_ENDPOINTS 32
 
 #define GRUB_XHCI_RING_ITEMS 64
 #define GRUB_XHCI_RING_SIZE (GRUB_XHCI_RING_ITEMS*sizeof(struct grub_xhci_trb))
@@ -330,7 +344,6 @@ enum {
     PLS_RESUME	  = 15,
 };
 
-
 // event ring segment
 struct grub_xhci_er_seg {
   grub_uint32_t ptr_low;
@@ -338,7 +351,6 @@ struct grub_xhci_er_seg {
   grub_uint32_t size;
   grub_uint32_t reserved_01;
 } GRUB_PACKED;
-
 
 struct grub_xhci_ring {
     struct grub_xhci_trb      ring[GRUB_XHCI_RING_ITEMS];
@@ -394,6 +406,7 @@ struct grub_xhci
   grub_uint32_t ports;
   grub_uint32_t slots;
   grub_uint8_t flag64;
+  grub_uint16_t spb;
   struct xhci_portmap usb2;
   struct xhci_portmap usb3;
   /* xhci data structures */
@@ -405,6 +418,8 @@ struct grub_xhci
   volatile struct grub_xhci_ring *evts;
   struct grub_pci_dma_chunk *eseg_dma;
   volatile struct grub_xhci_er_seg *eseg;
+  struct grub_pci_dma_chunk *spba_dma;
+  struct grub_pci_dma_chunk *spad_dma;
 
   grub_uint32_t reset;		/* bits 1-15 are flags if port was reset from connected time or not */
   struct grub_xhci *next;
@@ -488,8 +503,19 @@ grub_xhci_port_setbits (struct grub_xhci *x, grub_uint32_t port,
 }
 
 /****************************************************************
- * xhci status functions
+ * xhci status and support functions
  ****************************************************************/
+
+static grub_uint32_t xhci_get_pagesize(struct grub_xhci *x)
+{
+  /* Chapter 5.4.3 Page Size Register (PAGESIZE) */
+  for (grub_uint8_t i = 0; i < 16; i++)
+    {
+      if (grub_xhci_read32(&x->op->pagesize) & (1 << i))
+	return 1 << (12 + i);
+    }
+  return 0;
+}
 
 static grub_uint8_t xhci_is_halted(struct grub_xhci *x)
 {
@@ -520,7 +546,8 @@ static void xhci_check_status(struct grub_xhci *x)
 static int
 grub_xhci_inctx_size(struct grub_xhci *x)
 {
-  return (sizeof(struct grub_xhci_inctx) * 33) << x->flag64;
+  const grub_uint8_t cnt = GRUB_XHCI_MAX_ENDPOINTS + 1;
+  return (sizeof(struct grub_xhci_inctx) * cnt) << x->flag64;
 }
 
 static void
@@ -536,7 +563,7 @@ grub_xhci_alloc_inctx(struct grub_xhci *x, int maxepid,
   int size = grub_xhci_inctx_size(x);
   struct grub_pci_dma_chunk *dma = grub_memalign_dma32(2048 << x->flag64, size);
   if (!dma)
-      return NULL;
+    return NULL;
 
   volatile struct grub_xhci_inctx *in = grub_dma_get_virt(dma);
   grub_memset((void *)in, 0, size);
@@ -634,8 +661,6 @@ static void xhci_process_events(struct grub_xhci *x)
 			   & ~(XHCI_PORTSC_PLS_MASK<<XHCI_PORTSC_PLS_SHIFT))
 			  | (1<<XHCI_PORTSC_PLS_SHIFT));
 	    grub_xhci_write32(&x->pr[port].portsc, pclear);
-
-	    //xhci_print_port_state(3, __func__, port, portsc);
 	    break;
 	}
 	default:
@@ -966,7 +991,6 @@ grub_xhci_reset (struct grub_xhci *x)
 {
   grub_uint32_t reg;
   grub_uint32_t end;
-  grub_uint32_t i;
 
   reg = grub_xhci_read32(&x->op->usbcmd);
   if (reg & GRUB_XHCI_CMD_RS)
@@ -1031,25 +1055,6 @@ grub_xhci_reset (struct grub_xhci *x)
 
   grub_arch_sync_dma_caches(x->evts, sizeof(*x->eseg));
 
-  reg = grub_xhci_read32(&x->caps->hcsparams2);
-  grub_uint32_t spb = (reg >> 21 & 0x1f) << 5 | reg >> 27;
-  if (spb)
-    {
-	grub_dprintf("xhci", "%s: setup %d scratch pad buffers\n", __func__, spb);
-	grub_uint64_t *spba = (grub_uint64_t *) grub_memalign_dma32(64, sizeof(*spba) * spb);
-	void *pad = grub_memalign_dma32(PAGE_SIZE, PAGE_SIZE * spb);
-	if (!spba || !pad)
-	  {
-	    grub_free(spba);
-	    grub_free(pad);
-	    return GRUB_USB_ERR_INTERNAL;
-	  }
-	for (i = 0; i < spb; i++)
-	    spba[i] = (grub_uint32_t)pad + (i * PAGE_SIZE);
-	x->devs[0].ptr_low = (grub_uint32_t)spba;
-	x->devs[0].ptr_high = 0;
-      grub_arch_sync_dma_caches(x->devs, sizeof(x->devs[0]));
-    }
   xhci_check_status(x);
 
   grub_dprintf ("xhci", "XHCI OP COMMAND: %08x\n",
@@ -1106,121 +1111,154 @@ grub_xhci_init_device (volatile void *regs)
   x->ir = (volatile struct grub_xhci_ir *) (((grub_uint8_t *)regs) +
 		  grub_xhci_read32(&x->caps->rtsoff) + GRUB_XHCI_IR_OFFSET);
 
-  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: CAPLENGTH: %02x\n",
+  grub_dprintf ("xhci", "XHCI init: CAPLENGTH: 0x%02x\n",
 		grub_xhci_read8 (&x->caps->caplength));
-  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: HCIVERSION: %04x\n",
+  grub_dprintf ("xhci", "XHCI init: HCIVERSION: 0x%04x\n",
 		grub_xhci_read16 (&x->caps->hciversion));
-  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: HCSPARAMS1: %08x\n",
+  grub_dprintf ("xhci", "XHCI init: HCSPARAMS1: 0x%08x\n",
 		grub_xhci_read32 (&x->caps->hcsparams1));
-  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: HCSPARAMS2: %08x\n",
+  grub_dprintf ("xhci", "XHCI init: HCSPARAMS2: 0x%08x\n",
 		grub_xhci_read32 (&x->caps->hcsparams2));
-  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: HCSPARAMS3: %08x\n",
+  grub_dprintf ("xhci", "XHCI init: HCSPARAMS3: 0x%08x\n",
 		grub_xhci_read32 (&x->caps->hcsparams3));
-  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: HCCPARAMS: %08x\n",
+  grub_dprintf ("xhci", "XHCI init: HCCPARAMS: 0x%08x\n",
 		grub_xhci_read32 (&x->caps->hcsparams3));
-  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: DBOFF: %08x\n",
+  grub_dprintf ("xhci", "XHCI init: DBOFF: 0x%08x\n",
 		grub_xhci_read32 (&x->caps->dboff));
-  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: RTOFF: %08x\n",
+  grub_dprintf ("xhci", "XHCI init: RTOFF: 0x%08x\n",
 		grub_xhci_read32 (&x->caps->rtsoff));
 
   hcs1 = grub_xhci_read32(&x->caps->hcsparams1);
   hcc = grub_xhci_read32(&x->caps->hccparams);
   x->ports = (grub_uint32_t) ((hcs1 >> 24) & 0xff);
   x->slots = (grub_uint32_t) (hcs1	 & 0xff);
-  x->xcap  = (grub_uint32_t) (((hcc >> 16) & 0xffff) << 2);
+  x->xcap  = (grub_uint32_t) ((hcc >> 16) & 0xffff) * sizeof(grub_uint32_t);
   x->flag64 = (grub_uint8_t) ((hcc & 0x04) ? 1 : 0);
-  grub_dprintf("xhci", "XHCI init: %d ports, %d slots"
-	  ", %d byte contexts\n"
-	  , x->ports, x->slots
-	  , x->flag64 ? 64 : 32);
-  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: flag64=%d\n", x->flag64);
+  grub_dprintf("xhci", "XHCI init: %d ports, %d slots, %d byte contexts\n"
+	       , x->ports, x->slots, x->flag64 ? 64 : 32);
 
   if (x->xcap)
-  {
-    grub_uint32_t off;
-    volatile grub_uint8_t *addr = (grub_uint8_t *) x->caps + x->xcap;
-    do
-      {
-	volatile struct grub_xhci_xcap *xcap = (void *)addr;
-	grub_uint32_t ports, name, cap = grub_xhci_read32(&xcap->cap);
-	switch (cap & 0xff) {
-	case 0x02:
-	  name  = grub_xhci_read32(&xcap->data[0]);
-	  ports = grub_xhci_read32(&xcap->data[1]);
-	  grub_uint8_t major = (cap >> 24) & 0xff;
-	  grub_uint8_t minor = (cap >> 16) & 0xff;
-	  grub_uint8_t count = (ports >> 8) & 0xff;
-	  grub_uint8_t start = (ports >> 0) & 0xff;
-	  grub_dprintf("xhci", "XHCI    protocol %c%c%c%c %x.%02x"
-	      ", %d ports (offset %d), def %x\n"
-	      , (name >>  0) & 0xff
-	      , (name >>  8) & 0xff
-	      , (name >> 16) & 0xff
-	      , (name >> 24) & 0xff
-	      , major, minor
-	      , count, start
-	      , ports >> 16);
-	  if (name == 0x20425355 /* "USB " */) {
-	    if (major == 2)
+    {
+      grub_uint32_t off;
+      volatile grub_uint8_t *addr = (grub_uint8_t *) x->caps + x->xcap;
+      do
+	{
+	  volatile struct grub_xhci_xcap *xcap = (void *)addr;
+	  grub_uint32_t ports, name, cap = grub_xhci_read32(&xcap->cap);
+	  switch (cap & 0xff) {
+	  case 0x02:
+	    name  = grub_xhci_read32(&xcap->data[0]);
+	    ports = grub_xhci_read32(&xcap->data[1]);
+	    const grub_uint8_t major = (cap >> 24) & 0xff;
+	    const grub_uint8_t minor = (cap >> 16) & 0xff;
+	    const grub_uint8_t count = (ports >> 8) & 0xff;
+	    const grub_uint8_t start = (ports >> 0) & 0xff;
+	    grub_dprintf("xhci", "XHCI init protocol %c%c%c%c %x.%02x"
+			 ", %d ports (offset %d), def %x\n"
+			, (name >>  0) & 0xff
+			, (name >>  8) & 0xff
+			, (name >> 16) & 0xff
+			, (name >> 24) & 0xff
+			, major, minor
+			, count, start
+			, ports >> 16);
+	    if (name == 0x20425355 /* "USB " */)
 	      {
-		x->usb2.count = count;
+		if (major == 2)
+		  {
+		    x->usb2.count = count;
+		  }
+		else if (major == 3)
+		  {
+		    x->usb3.start = start;
+		    x->usb3.count = count;
+		  }
 	      }
-	    if (major == 3)
-	      {
-		x->usb3.start = start;
-		x->usb3.count = count;
-	      }
-	  }
-	  break;
-	default:
+	    break;
+	  default:
 	    grub_dprintf("xhci", "XHCI    extcap 0x%x @ %p\n", cap & 0xff, addr);
 	    break;
-	}
+	  }
 	off = (cap >> 8) & 0xff;
 	addr += off << 2;
-      }
-    while (off > 0);
-  }
-
-  grub_uint32_t pagesize = grub_xhci_read32(&x->op->pagesize);
-  if (PAGE_SIZE != (pagesize<<12))
-    {
-      grub_dprintf("xhci", "XHCI driver does not support page size code %d\n"
-	      , pagesize<<12);
-      goto fail;
+	}
+      while (off > 0);
     }
 
-  x->devs_dma = grub_memalign_dma32(64, sizeof(*x->devs) * (x->slots + 1));
-  grub_dprintf ("xhci", "XHCI devs %p\n", x->devs_dma);
+  const grub_uint32_t pagesize = xhci_get_pagesize(x);
+  grub_dprintf("xhci", "XHCI init: Minimum supported page size 0x%x\n", pagesize);
+
+  /* Chapter 6.1 Device Context Base Address Array */
+  x->devs_dma = grub_memalign_dma32(ALIGN_DCBAA, sizeof(*x->devs) * (x->slots + 1));
   if (!x->devs_dma) 
       goto fail;
   x->devs = grub_dma_get_virt(x->devs_dma);
   grub_memset((void *)x->devs, 0, sizeof(*x->devs) * (x->slots + 1));
   grub_arch_sync_dma_caches(x->devs, sizeof(*x->devs) * (x->slots + 1));
+  grub_dprintf ("xhci", "XHCI init: device memory %p (%x)\n",
+		grub_dma_get_virt(x->devs_dma),
+		grub_dma_get_phys(x->devs_dma));
 
-  x->eseg_dma = grub_memalign_dma32(64, sizeof(*x->eseg));
-  grub_dprintf ("xhci", "XHCI eseg %p\n", x->eseg_dma);
+  /* Chapter 6.5 Event Ring Segment Table */
+  x->eseg_dma = grub_memalign_dma32(ALIGN_EVT_RING_TABLE, sizeof(*x->eseg));
   if (!x->eseg_dma) 
       goto fail;
   x->eseg = grub_dma_get_virt(x->eseg_dma);
   grub_memset((void *)x->eseg, 0, sizeof(*x->eseg));
   grub_arch_sync_dma_caches(x->eseg, sizeof(*x->eseg));
+  grub_dprintf ("xhci", "XHCI init: event ring table memory %p (%x)\n",
+		grub_dma_get_virt(x->eseg_dma),
+		grub_dma_get_phys(x->eseg_dma));
 
-  x->cmds_dma = grub_memalign_dma32(GRUB_XHCI_RING_SIZE, sizeof(*x->cmds));
-  grub_dprintf ("xhci", "XHCI cmds %p\n", x->cmds_dma);
+  x->cmds_dma = grub_memalign_dma32(ALIGN_CMD_RING_SEG, sizeof(*x->cmds));
   if (!x->cmds_dma) 
       goto fail;
   x->cmds = grub_dma_get_virt(x->cmds_dma);
   grub_memset((void *)x->cmds, 0, sizeof(*x->cmds));
   grub_arch_sync_dma_caches(x->cmds, sizeof(*x->cmds));
+  grub_dprintf ("xhci", "XHCI init: command ring memory %p (%x)\n",
+		grub_dma_get_virt(x->cmds_dma),
+		grub_dma_get_phys(x->cmds_dma));
 
-  x->evts_dma = grub_memalign_dma32(GRUB_XHCI_RING_SIZE, sizeof(*x->evts));
-  grub_dprintf ("xhci", "XHCI evts %p\n", x->evts_dma);
+  x->evts_dma = grub_memalign_dma32(ALIGN_EVT_RING_SEG, sizeof(*x->evts));
   if (!x->evts_dma) 
       goto fail;
   x->evts = grub_dma_get_virt(x->evts_dma);
   grub_memset((void *)x->evts, 0, sizeof(*x->evts));
   grub_arch_sync_dma_caches(x->evts, sizeof(*x->evts));
+  grub_dprintf ("xhci", "XHCI init: event ring memory %p (%x)\n",
+		grub_dma_get_virt(x->evts_dma),
+		grub_dma_get_phys(x->evts_dma));
+
+  /* Chapter 4.20 Scratchpad Buffers */
+  reg = grub_xhci_read32(&x->caps->hcsparams2);
+  x->spb = (reg >> 21 & 0x1f) << 5 | reg >> 27;
+  if (x->spb)
+    {
+      volatile grub_uint64_t *spba;
+      grub_dprintf("xhci", "%s: setup %d scratch pad buffers\n", __func__, x->spb);
+      x->spba_dma = grub_memalign_dma32(ALIGN_SPBA, sizeof(*spba) * x->spb);
+      if (!x->spba_dma)
+	goto fail;
+
+      x->spad_dma = grub_memalign_dma32(pagesize, pagesize * x->spb);
+      if (!x->spad_dma)
+	{
+	  grub_dma_free(x->spba_dma);
+	  goto fail;
+	}
+
+      spba = grub_dma_get_virt(x->spba_dma);
+      for (grub_uint32_t i = 0; i < x->spb; i++)
+	spba[i] = (grub_addr_t)grub_dma_get_phys(x->spad_dma) + (i * pagesize);
+      grub_arch_sync_dma_caches(x->spba_dma, sizeof(*spba) * x->spb);
+
+      x->devs[0].ptr_low = grub_dma_get_phys(x->spba_dma);
+      x->devs[0].ptr_high = 0;
+      grub_arch_sync_dma_caches(x->devs_dma, sizeof(x->devs[0]));
+      grub_dprintf ("xhci", "XHCI init: Allocated %d scratch buffers of size 0x%x\n",
+		    x->spb, pagesize);
+    }
 
   grub_xhci_reset(x);
 
@@ -1247,6 +1285,10 @@ fail:
 	grub_dma_free (x->cmds_dma);
       if (x->evts_dma)
 	grub_dma_free (x->evts_dma);
+      if (x->spad_dma)
+	grub_dma_free (x->spad_dma);
+      if (x->spba_dma)
+	grub_dma_free (x->spba_dma);
     }
   grub_free (x);
 
@@ -1399,7 +1441,7 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
     return GRUB_USB_ERR_NONE;
 
   /* Allocate DMA buffer as endpoint cmd TRB */
-  reqs_dma = grub_memalign_dma32(GRUB_XHCI_RING_SIZE, sizeof(*reqs));
+  reqs_dma = grub_memalign_dma32(ALIGN_TRB, sizeof(*reqs));
   if (!reqs_dma)
     return GRUB_USB_ERR_INTERNAL;
   reqs = grub_dma_get_virt(reqs_dma);
@@ -1541,8 +1583,7 @@ grub_xhci_usb_to_grub_err (unsigned char status)
 }
 
 static int
-grub_xhci_transfer_is_zlp(grub_usb_transfer_t transfer,
-			  int idx)
+grub_xhci_transfer_is_zlp(grub_usb_transfer_t transfer, int idx)
 {
   if (idx >= transfer->transcnt)
     return 0;
@@ -1555,15 +1596,13 @@ grub_xhci_transfer_is_zlp(grub_usb_transfer_t transfer,
 }
 
 static int
-grub_xhci_transfer_is_last(grub_usb_transfer_t transfer,
-			   int idx)
+grub_xhci_transfer_is_last(grub_usb_transfer_t transfer, int idx)
 {
     return (idx + 1) == transfer->transcnt;
 }
 
 static int
-grub_xhci_transfer_is_data(grub_usb_transfer_t transfer,
-			   int idx)
+grub_xhci_transfer_is_data(grub_usb_transfer_t transfer, int idx)
 {
   grub_usb_transaction_t tr;
 
@@ -1589,8 +1628,7 @@ grub_xhci_transfer_is_data(grub_usb_transfer_t transfer,
 }
 
 static int
-grub_xhci_transfer_is_in(grub_usb_transfer_t transfer,
-			 int idx)
+grub_xhci_transfer_is_in(grub_usb_transfer_t transfer, int idx)
 {
   grub_usb_transaction_t tr;
 
@@ -1603,8 +1641,7 @@ grub_xhci_transfer_is_in(grub_usb_transfer_t transfer,
 }
 
 static int
-grub_xhci_transfer_is_normal(grub_usb_transfer_t transfer,
-			    int idx)
+grub_xhci_transfer_is_normal(grub_usb_transfer_t transfer, int idx)
 {
   grub_usb_transaction_t tr;
 
@@ -2166,7 +2203,7 @@ grub_xhci_detach_dev (grub_usb_controller_t ctrl, grub_usb_device_t dev)
     {
       priv = dev->xhci_priv;
       // Stop endpoints and free ring buffer
-      for (int i = 0; i < 32; i++)
+      for (int i = 0; i < GRUB_XHCI_MAX_ENDPOINTS; i++)
 	{
 	  if (priv->enpoint_trbs[i] != NULL)
 	    {

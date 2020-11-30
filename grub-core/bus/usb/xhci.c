@@ -44,7 +44,6 @@ GRUB_MOD_LICENSE ("GPLv3+");
  */
 
 
-#define PAGE_SIZE 4096
 #define xhci_get_field(data, field)	     \
     (((data) >> field##_SHIFT) & field##_MASK)
 #define XHCI_PORTSC_PLS_MASK     0xf
@@ -144,6 +143,9 @@ enum
 #define ALIGN_EVT_RING_TABLE 64
 #define ALIGN_TRB 16
 #define ALIGN_INCTX 64
+#define ALIGN_SLOTCTX 32
+
+#define BOUNDARY_RING 0x10000
 
 enum
 {
@@ -408,6 +410,7 @@ struct grub_xhci
   grub_uint32_t slots;
   grub_uint8_t flag64;
   grub_uint16_t spb;
+  grub_uint32_t pagesize;
   struct xhci_portmap usb2;
   struct xhci_portmap usb3;
   /* xhci data structures */
@@ -540,6 +543,29 @@ static void xhci_check_status(struct grub_xhci *x)
     grub_dprintf("xhci", "%s: Command ring running\n", __func__);
 }
 
+/* xhci_memalign_dma32 allocates DMA memory satisfying alignment and boundary
+ * requirements without wasting to much memory */
+static struct grub_pci_dma_chunk *
+xhci_memalign_dma32(grub_size_t align,
+		    grub_size_t size,
+		    grub_size_t boundary)
+{
+	struct grub_pci_dma_chunk *tmp;
+	const grub_uint32_t mask = boundary - 1;
+	grub_uint32_t start, end;
+
+	/* Allocate some memory and check if it doesn't cross boundary */
+	tmp = grub_memalign_dma32(align, size);
+	start = grub_dma_get_phys(tmp);
+	end = start + size - 1;
+	if ((start & mask) == (end & mask))
+		return tmp;
+	/* Buffer isn't usable, allocate bigger one */
+	grub_dma_free(tmp);
+
+	return grub_memalign_dma32(boundary, size);
+}
+
 /****************************************************************
  * helper functions for in context DMA buffer
  ****************************************************************/
@@ -562,7 +588,8 @@ grub_xhci_alloc_inctx(struct grub_xhci *x, int maxepid,
 		      struct grub_usb_device *dev)
 {
   int size = grub_xhci_inctx_size(x);
-  struct grub_pci_dma_chunk *dma = grub_memalign_dma32(2048 << x->flag64, size);
+  struct grub_pci_dma_chunk *dma = xhci_memalign_dma32(ALIGN_INCTX, size,
+						       x->pagesize);
   if (!dma)
     return NULL;
 
@@ -1217,11 +1244,14 @@ grub_xhci_init_device (volatile void *regs)
       while (off > 0);
     }
 
-  const grub_uint32_t pagesize = xhci_get_pagesize(x);
-  grub_dprintf("xhci", "XHCI init: Minimum supported page size 0x%x\n", pagesize);
+  x->pagesize = xhci_get_pagesize(x);
+  grub_dprintf("xhci", "XHCI init: Minimum supported page size 0x%x\n",
+	       x->pagesize);
 
   /* Chapter 6.1 Device Context Base Address Array */
-  x->devs_dma = grub_memalign_dma32(ALIGN_DCBAA, sizeof(*x->devs) * (x->slots + 1));
+  x->devs_dma = xhci_memalign_dma32(ALIGN_DCBAA,
+				    sizeof(*x->devs) * (x->slots + 1),
+				    x->pagesize);
   if (!x->devs_dma) 
       goto fail;
   x->devs = grub_dma_get_virt(x->devs_dma);
@@ -1232,7 +1262,7 @@ grub_xhci_init_device (volatile void *regs)
 		grub_dma_get_phys(x->devs_dma));
 
   /* Chapter 6.5 Event Ring Segment Table */
-  x->eseg_dma = grub_memalign_dma32(ALIGN_EVT_RING_TABLE, sizeof(*x->eseg));
+  x->eseg_dma = xhci_memalign_dma32(ALIGN_EVT_RING_TABLE, sizeof(*x->eseg), 0);
   if (!x->eseg_dma) 
       goto fail;
   x->eseg = grub_dma_get_virt(x->eseg_dma);
@@ -1242,7 +1272,8 @@ grub_xhci_init_device (volatile void *regs)
 		grub_dma_get_virt(x->eseg_dma),
 		grub_dma_get_phys(x->eseg_dma));
 
-  x->cmds_dma = grub_memalign_dma32(ALIGN_CMD_RING_SEG, sizeof(*x->cmds));
+  x->cmds_dma = xhci_memalign_dma32(ALIGN_CMD_RING_SEG, sizeof(*x->cmds),
+				    BOUNDARY_RING);
   if (!x->cmds_dma) 
       goto fail;
   x->cmds = grub_dma_get_virt(x->cmds_dma);
@@ -1252,7 +1283,8 @@ grub_xhci_init_device (volatile void *regs)
 		grub_dma_get_virt(x->cmds_dma),
 		grub_dma_get_phys(x->cmds_dma));
 
-  x->evts_dma = grub_memalign_dma32(ALIGN_EVT_RING_SEG, sizeof(*x->evts));
+  x->evts_dma = xhci_memalign_dma32(ALIGN_EVT_RING_SEG, sizeof(*x->evts),
+				    BOUNDARY_RING);
   if (!x->evts_dma) 
       goto fail;
   x->evts = grub_dma_get_virt(x->evts_dma);
@@ -1269,11 +1301,13 @@ grub_xhci_init_device (volatile void *regs)
     {
       volatile grub_uint64_t *spba;
       grub_dprintf("xhci", "%s: setup %d scratch pad buffers\n", __func__, x->spb);
-      x->spba_dma = grub_memalign_dma32(ALIGN_SPBA, sizeof(*spba) * x->spb);
+      x->spba_dma = xhci_memalign_dma32(ALIGN_SPBA, sizeof(*spba) * x->spb,
+					x->pagesize);
       if (!x->spba_dma)
 	goto fail;
 
-      x->spad_dma = grub_memalign_dma32(pagesize, pagesize * x->spb);
+      x->spad_dma = xhci_memalign_dma32(x->pagesize, x->pagesize * x->spb,
+					x->pagesize);
       if (!x->spad_dma)
 	{
 	  grub_dma_free(x->spba_dma);
@@ -1282,14 +1316,14 @@ grub_xhci_init_device (volatile void *regs)
 
       spba = grub_dma_get_virt(x->spba_dma);
       for (grub_uint32_t i = 0; i < x->spb; i++)
-	spba[i] = (grub_addr_t)grub_dma_get_phys(x->spad_dma) + (i * pagesize);
+	spba[i] = (grub_addr_t)grub_dma_get_phys(x->spad_dma) + (i * x->pagesize);
       grub_arch_sync_dma_caches(x->spba_dma, sizeof(*spba) * x->spb);
 
       x->devs[0].ptr_low = grub_dma_get_phys(x->spba_dma);
       x->devs[0].ptr_high = 0;
       grub_arch_sync_dma_caches(x->devs_dma, sizeof(x->devs[0]));
       grub_dprintf ("xhci", "XHCI init: Allocated %d scratch buffers of size 0x%x\n",
-		    x->spb, pagesize);
+		    x->spb, x->pagesize);
     }
 
   grub_xhci_reset(x);
@@ -1473,7 +1507,8 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
     return GRUB_USB_ERR_NONE;
 
   /* Allocate DMA buffer as endpoint cmd TRB */
-  reqs_dma = grub_memalign_dma32(ALIGN_TRB, sizeof(*reqs));
+  reqs_dma = xhci_memalign_dma32(ALIGN_TRB, sizeof(*reqs),
+				 BOUNDARY_RING);
   if (!reqs_dma)
     return GRUB_USB_ERR_INTERNAL;
   reqs = grub_dma_get_virt(reqs_dma);
@@ -1526,7 +1561,8 @@ grub_xhci_prepare_endpoint (struct grub_xhci *x,
     grub_uint32_t size = (sizeof(struct grub_xhci_slotctx) * 32) << x->flag64;
 
     /* Allocate memory for the device specific slot context */
-    priv->slotctx_dma = grub_memalign_dma32(1024 << x->flag64, size);
+    priv->slotctx_dma = xhci_memalign_dma32(ALIGN_SLOTCTX, size,
+					    x->pagesize);
     if (!priv->slotctx_dma)
       {
 	grub_dprintf("xhci", "%s: grub_memalign_dma32 failed\n", __func__);

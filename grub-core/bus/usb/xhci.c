@@ -80,6 +80,9 @@ struct grub_xhci_xcap {
     grub_uint32_t data[];
 } GRUB_PACKED;
 
+#define XHCI_CAP_LEGACY_SUPPORT 1
+#define XHCI_CAP_SUPPORTED_PROTOCOL 2
+
 struct xhci_portmap {
     grub_uint8_t start;
     grub_uint8_t count;
@@ -1087,6 +1090,30 @@ grub_xhci_reset (struct grub_xhci *x)
   return GRUB_USB_ERR_NONE;
 }
 
+grub_usb_err_t
+grub_xhci_request_legacy_handoff(volatile struct grub_xhci_xcap *xcap)
+{
+  grub_uint32_t end;
+
+  end = grub_get_time_ms () + 10;
+  for (;;)
+    {
+      grub_uint32_t cap = grub_xhci_read32(&xcap->cap);
+      if (cap & (1 << 16))
+	grub_xhci_write32(&xcap->cap, cap | (1 << 24));
+      else
+        break;
+
+      if (grub_get_time_ms () > end)
+	{
+	  grub_dprintf ("xhci","ERROR: %s TIMEOUT\n", __func__);
+	  return GRUB_USB_ERR_TIMEOUT;
+	}
+      grub_millisleep(1);
+    }
+    return GRUB_USB_ERR_NONE;
+}
+
 /* PCI iteration function... */
 void
 grub_xhci_init_device (volatile void *regs)
@@ -1146,7 +1173,14 @@ grub_xhci_init_device (volatile void *regs)
 	  volatile struct grub_xhci_xcap *xcap = (void *)addr;
 	  grub_uint32_t ports, name, cap = grub_xhci_read32(&xcap->cap);
 	  switch (cap & 0xff) {
-	  case 0x02:
+	  case XHCI_CAP_LEGACY_SUPPORT:
+	    if (grub_xhci_request_legacy_handoff(xcap) != GRUB_USB_ERR_NONE)
+	      {
+		grub_dprintf("xhci", "XHCI init: Failed to get xHCI ownership\n");
+		goto fail;
+	      }
+	    break;
+	  case XHCI_CAP_SUPPORTED_PROTOCOL:
 	    name  = grub_xhci_read32(&xcap->data[0]);
 	    ports = grub_xhci_read32(&xcap->data[1]);
 	    const grub_uint8_t major = (cap >> 24) & 0xff;

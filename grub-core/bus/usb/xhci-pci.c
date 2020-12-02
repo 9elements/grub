@@ -112,7 +112,7 @@ grub_xhci_pci_iter (grub_pci_device_t dev, grub_pci_id_t pciid,
 			  GRUB_PCI_COMMAND_MEM_ENABLED
 			  | GRUB_PCI_COMMAND_BUS_MASTER
 			  | grub_pci_read_word(addr));
-      
+
       grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: 32-bit XHCI OK\n");
     }
 
@@ -129,7 +129,7 @@ grub_xhci_pci_iter (grub_pci_device_t dev, grub_pci_id_t pciid,
     /* Determine and change ownership. */
   /* EECP offset valid in HCCPARAMS */
   /* Ownership can be changed via EECP only */
-  if (pciid != GRUB_CS5536_PCIID && eecp_offset >= 0x40)	
+  if (pciid != GRUB_CS5536_PCIID && eecp_offset >= 0x40)
     {
       grub_pci_address_t pciaddr_eecp;
       pciaddr_eecp = grub_pci_make_address (dev, eecp_offset);

@@ -15,7 +15,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with GRUB.  If not, see <http://www.gnu.org/licenses/>.
- * 
+ *
  * Big parts of this software are inspired by seabios XHCI implementation
  * Released under LGPLv3. Credits to:
  *
@@ -618,23 +618,10 @@ grub_xhci_alloc_inctx(struct grub_xhci *x, int maxepid,
   }
 
   // Route is greater zero on devices that are connected to a non root hub
-  if (dev->route) {
-    // XXX
-#if 0
-      if (dev->speed == GRUB_USB_SPEED_LOW || dev->speed == GRUB_USB_SPEED_FULL) {
-	  struct xhci_pipe *hpipe = container_of(
-	      hubdev->defpipe, struct xhci_pipe, pipe);
-	  if (hubdev->speed  == XHCI_USB_HIGHSPEED) {
-	      slot->ctx[2] |= hpipe->slotid;
-	      slot->ctx[2] |= (usbdev->port+1) << 8;
-	  } else {
-	      struct xhci_slotctx *hslot = (void*)xhci->devs[hpipe->slotid].ptr_low;
-	      slot->ctx[2] = hslot->ctx[2];
-	  }
-      }
-
-#endif
-  }
+  if (dev->route)
+    {
+      // FIXME: Implement this code for non SuperSpeed hub devices
+    }
   slot->ctx[0]    |= dev->route;
   slot->ctx[1]    |= (dev->root_port+1) << 16;
 
@@ -900,7 +887,7 @@ static int xhci_cmd_submit(struct grub_xhci *x,
     {
       xhci_trb_queue(x->cmds, 0, 0, flags);
     }
-    
+
     xhci_doorbell(x, 0, 0);
     int rc = xhci_event_wait(x, x->cmds, 1000);
     grub_dprintf("xhci", "%s: xhci_event_wait = %d\n", __func__, rc);
@@ -1252,7 +1239,7 @@ grub_xhci_init_device (volatile void *regs)
   x->devs_dma = xhci_memalign_dma32(ALIGN_DCBAA,
 				    sizeof(*x->devs) * (x->slots + 1),
 				    x->pagesize);
-  if (!x->devs_dma) 
+  if (!x->devs_dma)
       goto fail;
   x->devs = grub_dma_get_virt(x->devs_dma);
   grub_memset((void *)x->devs, 0, sizeof(*x->devs) * (x->slots + 1));
@@ -1263,7 +1250,7 @@ grub_xhci_init_device (volatile void *regs)
 
   /* Chapter 6.5 Event Ring Segment Table */
   x->eseg_dma = xhci_memalign_dma32(ALIGN_EVT_RING_TABLE, sizeof(*x->eseg), 0);
-  if (!x->eseg_dma) 
+  if (!x->eseg_dma)
       goto fail;
   x->eseg = grub_dma_get_virt(x->eseg_dma);
   grub_memset((void *)x->eseg, 0, sizeof(*x->eseg));
@@ -1274,7 +1261,7 @@ grub_xhci_init_device (volatile void *regs)
 
   x->cmds_dma = xhci_memalign_dma32(ALIGN_CMD_RING_SEG, sizeof(*x->cmds),
 				    BOUNDARY_RING);
-  if (!x->cmds_dma) 
+  if (!x->cmds_dma)
       goto fail;
   x->cmds = grub_dma_get_virt(x->cmds_dma);
   grub_memset((void *)x->cmds, 0, sizeof(*x->cmds));
@@ -1285,7 +1272,7 @@ grub_xhci_init_device (volatile void *regs)
 
   x->evts_dma = xhci_memalign_dma32(ALIGN_EVT_RING_SEG, sizeof(*x->evts),
 				    BOUNDARY_RING);
-  if (!x->evts_dma) 
+  if (!x->evts_dma)
       goto fail;
   x->evts = grub_dma_get_virt(x->evts_dma);
   grub_memset((void *)x->evts, 0, sizeof(*x->evts));
@@ -1921,7 +1908,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
 	  }
 	  if (grub_xhci_transfer_is_last(transfer, i))
 	    flags |= TRB_TR_IOC;
-      
+
 	  /* The ring might be to small, submit while adding new entries */
 	  rc = xhci_trb_queue_and_flush(x, priv->slotid, epid,
 				  reqs, tr->data, tr->size, flags);
@@ -1929,7 +1916,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
 	    return GRUB_USB_ERR_TIMEOUT;
 	  else if (rc > 1)
 	    return grub_xhci_usb_to_grub_err(rc);
-  
+
 	}
     }
   xhci_doorbell(x, priv->slotid, epid);

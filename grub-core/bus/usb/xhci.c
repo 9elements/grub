@@ -175,7 +175,7 @@ enum
 /* XHCI memory data structs */
 #define GRUB_XHCI_MAX_ENDPOINTS 32
 
-#define GRUB_XHCI_RING_ITEMS 64
+#define GRUB_XHCI_RING_ITEMS 128
 #define GRUB_XHCI_RING_SIZE (GRUB_XHCI_RING_ITEMS*sizeof(struct grub_xhci_trb))
 /*
  *  xhci_ring structs are allocated with XHCI_RING_SIZE alignment,
@@ -392,8 +392,6 @@ struct grub_xhci_ir {
     grub_uint32_t erdp_low;
     grub_uint32_t erdp_high;
 } GRUB_PACKED;
-
-#define GRUB_XHCI_N_TD  640
 
 struct grub_xhci
 {
@@ -1090,7 +1088,7 @@ grub_xhci_reset (struct grub_xhci *x)
   return GRUB_USB_ERR_NONE;
 }
 
-grub_usb_err_t
+static grub_usb_err_t
 grub_xhci_request_legacy_handoff(volatile struct grub_xhci_xcap *xcap)
 {
   grub_uint32_t end;
@@ -2340,7 +2338,7 @@ static struct grub_usb_controller_dev usb_controller = {
   .attach_dev = grub_xhci_attach_dev,
   .detach_dev = grub_xhci_detach_dev,
   /* estimated max. count of TDs for one bulk transfer */
-  .max_bulk_tds = GRUB_XHCI_N_TD * 3 / 4
+  .max_bulk_tds = GRUB_XHCI_RING_ITEMS * 3 / 4
 };
 
 GRUB_MOD_INIT (xhci)
@@ -2352,8 +2350,6 @@ GRUB_MOD_INIT (xhci)
   grub_boot_time ("Registering XHCI driver");
   grub_usb_controller_dev_register (&usb_controller);
   grub_boot_time ("XHCI driver registered");
-//  grub_loader_register_preboot_hook (grub_xhci_fini_hw, grub_xhci_restore_hw,
-//				     GRUB_LOADER_PREBOOT_HOOK_PRIO_DISK);
 }
 
 GRUB_MOD_FINI (xhci)

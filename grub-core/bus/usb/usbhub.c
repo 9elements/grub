@@ -148,19 +148,32 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
   return dev;
 }
 
-
+static grub_usb_err_t
+grub_usb_set_hub_depth(grub_usb_device_t dev, grub_uint8_t depth)
+{
+  return grub_usb_control_msg (dev, (GRUB_USB_REQTYPE_OUT
+			            | GRUB_USB_REQTYPE_CLASS
+			            | GRUB_USB_REQTYPE_TARGET_DEV),
+			      GRUB_USB_HUB_REQ_SET_HUB_DEPTH, depth,
+			      0, 0, NULL);
+}
+
 static grub_usb_err_t
 grub_usb_add_hub (grub_usb_device_t dev)
 {
   struct grub_usb_usb_hubdesc hubdesc;
   grub_usb_err_t err;
+  grub_uint16_t req;
   int i;
-  
+
+  req = (dev->speed == GRUB_USB_SPEED_SUPER) ? GRUB_USB_DESCRIPTOR_SS_HUB :
+    GRUB_USB_DESCRIPTOR_HUB;
+
   err = grub_usb_control_msg (dev, (GRUB_USB_REQTYPE_IN
 	  		            | GRUB_USB_REQTYPE_CLASS
 			            | GRUB_USB_REQTYPE_TARGET_DEV),
-                              GRUB_USB_REQ_GET_DESCRIPTOR,
-			      (GRUB_USB_DESCRIPTOR_HUB << 8) | 0,
+			      GRUB_USB_REQ_GET_DESCRIPTOR,
+			      (req << 8) | 0,
 			      0, sizeof (hubdesc), (char *) &hubdesc);
   if (err)
     return err;
@@ -181,6 +194,19 @@ grub_usb_add_hub (grub_usb_device_t dev)
       grub_free (dev->children);
       grub_free (dev->ports);
       return GRUB_USB_ERR_INTERNAL;
+    }
+
+  if (dev->speed == GRUB_USB_SPEED_SUPER)
+    {
+      grub_uint8_t depth;
+      grub_uint32_t route;
+      /* Depth maximum value is 5, but root hubs doesn't count */
+      for (depth = 0, route = dev->route; (route & 0xf) > 0; route >>= 4)
+	depth++;
+
+      err = grub_usb_set_hub_depth(dev, depth);
+      if (err)
+        return err;
     }
 
   /* Power on all Hub ports.  */
@@ -637,7 +663,9 @@ poll_nonroot_hub (grub_usb_device_t dev)
 	      int split_hubaddr = 0;
 
 	      /* Determine the device speed.  */
-	      if (status & GRUB_USB_HUB_STATUS_PORT_LOWSPEED)
+	      if (dev->speed == GRUB_USB_SPEED_SUPER)
+	        speed = GRUB_USB_SPEED_SUPER;
+	      else if (status & GRUB_USB_HUB_STATUS_PORT_LOWSPEED)
 		speed = GRUB_USB_SPEED_LOW;
 	      else
 		{
@@ -651,7 +679,7 @@ poll_nonroot_hub (grub_usb_device_t dev)
 	      grub_millisleep (10);
 
               /* Find correct values for SPLIT hubport and hubaddr */
-	      if (speed == GRUB_USB_SPEED_HIGH)
+	      if (speed == GRUB_USB_SPEED_HIGH || speed == GRUB_USB_SPEED_SUPER)
 	        {
 		  /* HIGH speed device needs not transaction translation */
 		  split_hubport = 0;

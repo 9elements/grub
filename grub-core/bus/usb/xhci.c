@@ -184,7 +184,7 @@ enum
  *  then we can get it from a trb pointer (provided by evt ring).
  */
 #define XHCI_RING(_trb)	  \
-    ((struct grub_xhci_ring*)((grub_uint32_t)(_trb) & ~(GRUB_XHCI_RING_SIZE-1)))
+    ((struct grub_xhci_ring*)((grub_addr_t)(_trb) & ~(GRUB_XHCI_RING_SIZE-1)))
 
 /* slot context */
 struct grub_xhci_slotctx {
@@ -495,6 +495,14 @@ grub_xhci_read8(volatile void *addr) {
   return (*((volatile grub_uint32_t *)addr));
 }
 
+static inline void *
+grub_xhci_read_etrb_ptr(volatile struct grub_xhci_trb *trb) {
+  grub_uint64_t tmp;
+  tmp = (grub_uint64_t)grub_xhci_read32(&trb->ptr_low);
+  tmp |= ((grub_uint64_t)grub_xhci_read32(&trb->ptr_high)) << 32;
+  return (void *)(grub_addr_t)tmp;
+}
+
 static inline grub_uint32_t
 grub_xhci_port_read (struct grub_xhci *x, grub_uint32_t port)
 {
@@ -664,7 +672,7 @@ static void xhci_process_events(struct grub_xhci *x)
 	    case ER_TRANSFER:
 	    case ER_COMMAND_COMPLETE:
 	      {
-		struct grub_xhci_trb  *rtrb = (void*)grub_xhci_read32(&etrb->ptr_low);
+		struct grub_xhci_trb  *rtrb = grub_xhci_read_etrb_ptr(etrb);
 		struct grub_xhci_ring *ring = XHCI_RING(rtrb);
 		volatile struct grub_xhci_trb  *evt = &ring->evt;
 		grub_uint32_t eidx = rtrb - ring->ring + 1;
@@ -697,9 +705,9 @@ static void xhci_process_events(struct grub_xhci *x)
 	  }
 	grub_xhci_write32(&evts->nidx, nidx);
 	volatile struct grub_xhci_ir *ir = x->ir;
-	grub_uint32_t erdp = (grub_uint32_t)(evts->ring + nidx);
-	grub_xhci_write32(&ir->erdp_low, erdp);
-	grub_xhci_write32(&ir->erdp_high, 0);
+	grub_uint64_t erdp = (grub_addr_t)(void *)(&evts->ring[nidx]);
+	grub_xhci_write32(&ir->erdp_low, erdp & 0xffffffff);
+	grub_xhci_write32(&ir->erdp_high, erdp >> 32);
     }
 }
 
@@ -800,7 +808,7 @@ static void xhci_trb_queue(volatile struct grub_xhci_ring *ring,
 			   grub_uint32_t xferlen, grub_uint32_t flags)
 {
   grub_dprintf("xhci", "%s: ring %p data %llx len %d flags 0x%x remain 0x%x\n", __func__,
-      ring, data_or_addr, xferlen & 0x1ffff, flags, xferlen >> 17);
+      ring, (unsigned long long)data_or_addr, xferlen & 0x1ffff, flags, xferlen >> 17);
 
   if (xhci_ring_full(ring))
     {
@@ -1907,7 +1915,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
   if (transfer->type == GRUB_USB_TRANSACTION_TYPE_CONTROL)
   {
     volatile struct grub_usb_packet_setup *setupdata;
-    setupdata = (void *)transfer->transactions[0].data;
+    setupdata = (void *)(grub_addr_t)transfer->transactions[0].data;
     grub_dprintf("xhci", "%s: CONTROLL TRANS req %d\n", __func__, setupdata->request);
     grub_dprintf("xhci", "%s: CONTROLL TRANS length %d\n", __func__, setupdata->length);
 
@@ -1974,7 +1982,7 @@ grub_xhci_setup_transfer (grub_usb_controller_t dev,
 	/* Assume the ring has enough free space for all TRBs */
 	if (flags & TRB_TR_IDT && tr->size <= (int)sizeof(inline_data))
 	  {
-	    grub_memcpy(&inline_data, (void *)tr->data, tr->size);
+	    grub_memcpy(&inline_data, (void *)(grub_addr_t)tr->data, tr->size);
 	    xhci_trb_queue(reqs, inline_data, tr->size, flags);
 	  }
 	else

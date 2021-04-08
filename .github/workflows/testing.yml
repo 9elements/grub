@@ -1,0 +1,177 @@
+---
+
+name: Testing
+
+on:
+  - push
+
+jobs:
+  i386-targets:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Install dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -qq update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -qqy install \
+          autopoint libsdl1.2-dev lzop ovmf python qemu-system unifont
+          DEBIAN_FRONTEND=noninteractive sudo apt-get clean
+
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Create grub.cfg
+        run: |
+          echo -e "insmod echo\\ninsmod reboot\\necho hello world\\nreboot" > grub.cfg
+
+      - name: Bootstrap
+        run: ./bootstrap
+
+      - name: Build i386-coreboot
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: i386-coreboot
+          arch: i386
+          plat: coreboot
+
+      - name: Build i386-efi
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: i386-efi
+          arch: i386
+          plat: efi
+
+      - name: Build i386-ieee1275
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: i386-ieee1275
+          arch: i386
+          plat: ieee1275
+
+      - name: Build i386-multiboot
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: i386-multiboot
+          arch: i386
+          plat: multiboot
+
+      - name: Build i386-pc
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: i386-pc
+          arch: i386
+          plat: pc
+
+      - name: Build i386-qemu
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: i386-qemu
+          arch: i386
+          plat: qemu
+
+      - name: Build i386-xen
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: i386-xen
+          arch: i386
+          plat: xen
+
+      - name: Build i386-xen_pvh
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: i386-xen_pvh
+          arch: i386
+          plat: xen_pvh
+
+  x86_64-targets:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Install dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -qq update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -qqy install \
+          autopoint libsdl1.2-dev lzop ovmf python qemu-system unifont
+          DEBIAN_FRONTEND=noninteractive sudo apt-get clean
+
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Create grub.cfg
+        run: |
+          echo -e "insmod echo\\ninsmod reboot\\necho hello world\\nreboot" > grub.cfg
+
+      - name: Bootstrap
+        run: ./bootstrap
+
+      - name: Build x86_64-efi
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: x86_64-efi
+          arch: x86_64
+          plat: efi
+
+      - name: Build x86_64-xen
+        run: |
+          mkdir obj-$target
+          cd obj-$target
+          ../configure --target=$arch --with-platform=$plat --prefix=/tmp/grub
+          make
+          make install
+          ./grub-mkimage -c ../grub.cfg -p / -O $target -o grub-$target
+        env:
+          target: x86_64-xen
+          arch: x86_64
+          plat: xen
